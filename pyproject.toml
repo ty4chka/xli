@@ -28,17 +28,29 @@ classifiers = [
 dependencies = [
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
-    "textual>=0.52.0",
-    "rich>=13.0.0",
-    "pyfiglet>=0.8.0",
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
 ]
+# The shipping TUI (xli/tui/) is built on curses from the standard library, so
+# nothing in the default install path needs a GUI toolkit. textual is only used
+# by the legacy Textual questionnaire UI in xli/ui/questionnaire/, and pyfiglet
+# has no importer left at all.
 
 [project.optional-dependencies]
 nvim = ["pynvim>=0.5.0"]
-embeddings = ["faiss-cpu>=1.7.4", "sentence-transformers>=2.5.0"]
-all = ["pynvim>=0.5.0", "faiss-cpu>=1.7.4", "sentence-transformers>=2.5.0"]
+tui = ["textual>=0.52.0", "rich>=13.0.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "ruff>=0.4.0"]
+# Used by the db_client MCP server; its import is guarded and it tells the user
+# what to install, so it stays optional.
+db = ["psycopg2-binary>=2.9.0"]
+embeddings = ["numpy>=1.24.0", "faiss-cpu>=1.7.4", "sentence-transformers>=2.5.0"]
+all = [
+    "pynvim>=0.5.0",
+    "textual>=0.52.0",
+    "rich>=13.0.0",
+    "numpy>=1.24.0",
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.5.0",
+    "psycopg2-binary>=2.9.0",
+]
 
 [project.scripts]
 xli = "xli.__main__:main"

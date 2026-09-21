@@ -6,19 +6,40 @@ XLI Vector Store v4 — FAISS, semantic search, project indexing
 import json
 import hashlib
 from pathlib import Path
-import numpy as np
+from typing import TYPE_CHECKING
 
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.vector")
 
-# Lazy import faiss
+# numpy and faiss are both part of the optional `embeddings` extra. faiss was
+# already guarded; numpy was not, so importing this module without the extra
+# installed raised ModuleNotFoundError before the HAS_FAISS check could ever
+# run — the graceful degradation was unreachable.
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None  # type: ignore[assignment]
+    HAS_NUMPY = False
+
 try:
     import faiss
     HAS_FAISS = True
 except ImportError:
     HAS_FAISS = False
-    logger.log_structured("WARN", "vector", "faiss not available")
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import numpy as np
+
+if not HAS_NUMPY or not HAS_FAISS:
+    missing = [n for n, ok in (("numpy", HAS_NUMPY), ("faiss-cpu", HAS_FAISS)) if not ok]
+    logger.log_structured(
+        "WARN",
+        "vector",
+        f"semantic search unavailable, install with: pip install 'xli[embeddings]' "
+        f"(missing: {', '.join(missing)})",
+    )
 
 
 class CodeVectorStore:
@@ -37,7 +58,7 @@ class CodeVectorStore:
             return
         self._initialized = False  # Will be set to True after init
 
-        if not HAS_FAISS:
+        if not HAS_FAISS or not HAS_NUMPY:
             logger.log_structured("ERROR", "vector", "FAISS not available")
             return
 
@@ -51,7 +72,7 @@ class CodeVectorStore:
         self._initialized = True
         logger.log_structured("INFO", "vector", "VectorStore initialized")
 
-    def _get_embedding(self, text: str) -> np.ndarray:
+    def _get_embedding(self, text: str) -> "np.ndarray":
         """Get embedding for text (simplified — would use sentence-transformers)"""
         # Placeholder: random embedding for now
         # In production: use sentence-transformers/all-MiniLM-L6-v2
@@ -91,7 +112,7 @@ class CodeVectorStore:
 
     def add_document(self, path: str, content: str, doc_type: str = "code"):
         """Add document to index"""
-        if not self._initialized or not HAS_FAISS:
+        if not self._initialized or not HAS_FAISS or not HAS_NUMPY:
             return
 
         doc_id = len(self.documents)
@@ -111,7 +132,7 @@ class CodeVectorStore:
 
     def index_project(self, directory: str, pattern: str = "*.py"):
         """Index all files in project"""
-        if not self._initialized or not HAS_FAISS:
+        if not self._initialized or not HAS_FAISS or not HAS_NUMPY:
             logger.log_structured("WARN", "vector", "Cannot index — FAISS unavailable")
             return 0
 
@@ -132,7 +153,7 @@ class CodeVectorStore:
 
     def search(self, query: str, top_k: int = 5) -> list[tuple[str, str, float]]:
         """Semantic search"""
-        if not self._initialized or not HAS_FAISS or len(self.documents) == 0:
+        if not self._initialized or not HAS_FAISS or not HAS_NUMPY or len(self.documents) == 0:
             return []
 
         embedding = self._get_embedding(query)

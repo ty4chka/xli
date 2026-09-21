@@ -19,7 +19,9 @@ calls later inside the provider.
 from __future__ import annotations
 
 import json
+import io
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ from collections.abc import Callable, Iterator
 CONFIG_DIRNAME = ".xli"
 CONFIG_FILENAME = "config.json"
 ENV_PREFIX = "XLI_"
+ENV_FILENAME = ".env"
 
 
 DEFAULTS: dict[str, Any] = {
@@ -160,6 +163,9 @@ class Config:
     user_file: Path | None = None
     project_file: Path | None = None
     unknown_keys: list[str] = field(default_factory=list)
+    #: .env files consulted, and the variable names taken from them.
+    env_files: list[Path] = field(default_factory=list)
+    env_loaded: list[str] = field(default_factory=list)
 
     # ------------------------------------------------------------------ paths
     @classmethod
@@ -188,6 +194,18 @@ class Config:
             config._merge_file(path)
 
         if use_env:
+            # .env first, so keys declared there are visible to api_key() and
+            # to _merge_env() below.
+            #
+            # Project before user, because load_dotenv_files keeps the first
+            # value for a name: that makes project beat user, matching how the
+            # two config.json files layer, while a variable already exported in
+            # the real environment still beats both.
+            config.env_files = [
+                config.project_file.parent / ENV_FILENAME,
+                config.user_file.parent / ENV_FILENAME,
+            ]
+            config.env_loaded = load_dotenv_files(config.env_files)
             config._merge_env()
 
         return config
@@ -402,6 +420,64 @@ def _env_to_key(tail: str) -> str:
     if tail in _ENV_OVERRIDES:
         return _ENV_OVERRIDES[tail]
     return tail.lower().replace("__", ".")
+
+
+def _parse_dotenv(text: str) -> dict[str, str]:
+    """Parse a .env file. Handles comments, blank lines, quotes and `export`.
+
+    python-dotenv is a declared dependency and is used when present, but the
+    fallback keeps a bare checkout working if it is missing.
+    """
+    try:
+        from dotenv import dotenv_values
+
+        return {k: v for k, v in dotenv_values(stream=io.StringIO(text)).items() if v is not None}
+    except ImportError:
+        pass
+
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().removeprefix("export").strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def load_dotenv_files(paths: Iterable[Path]) -> list[str]:
+    """Read .env files into the process environment.
+
+    Files are read in order and the first value for a name wins, so pass the
+    higher-precedence file first.
+
+    A variable already set in the real environment always wins, so
+    `XLI_...=y xli run` and a key exported in the shell beat any file. The
+    previous implementation overwrote os.environ unconditionally, which made it
+    impossible to override a stale file value for a single command.
+
+    Returns the names that were actually set, for diagnostics.
+    """
+    set_names: list[str] = []
+    for path in paths:
+        if not path or not path.is_file():
+            continue
+        try:
+            values = _parse_dotenv(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        for key, value in values.items():
+            if key in os.environ:
+                continue
+            os.environ[key] = value
+            set_names.append(key)
+    return set_names
 
 
 _instance: Config | None = None

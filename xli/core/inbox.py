@@ -7,6 +7,7 @@ Agents coordinate through team_inbox/<project>/<team>/<agent>.jsonl
 import json
 import asyncio
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,7 +67,7 @@ class TeamInbox:
         self.team = team
         self.base_dir = Path.home() / ".xli" / "team_inbox" / project / team
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self._callbacks: dict[str, list[callable]] = {}
+        self._callbacks: dict[str, list[Callable[[InboxMessage], Any]]] = {}
         self._watches: dict[str, asyncio.Task] = {}
 
     def _get_inbox_path(self, agent: str) -> Path:
@@ -166,18 +167,18 @@ class TeamInbox:
             )
         return messages[-limit:]
 
-    def register_callback(self, agent: str, callback: callable):
+    def register_callback(self, agent: str, callback: Callable[[InboxMessage], Any]):
         """Register callback for incoming messages"""
         if agent not in self._callbacks:
             self._callbacks[agent] = []
         self._callbacks[agent].append(callback)
 
-    def unregister_callback(self, agent: str, callback: callable):
+    def unregister_callback(self, agent: str, callback: Callable[[InboxMessage], Any]):
         """Unregister callback"""
         if agent in self._callbacks:
             self._callbacks[agent] = [cb for cb in self._callbacks[agent] if cb != callback]
 
-    async def watch(self, agent: str, callback: callable, poll_interval: float = 1.0):
+    async def watch(self, agent: str, callback: Callable[[InboxMessage], Any], poll_interval: float = 1.0):
         """Watch inbox for new messages (polling for compatibility)"""
         last_count = 0
 

@@ -5,7 +5,9 @@ XLI Prompt Lab v4 — A/B testing prompts, evaluation, winner selection
 
 import json
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -94,7 +96,7 @@ class PromptLab:
         return exp_id
 
     async def run_experiment(self, task: str, exp_id: str,
-                           metric_func: callable | None = None) -> dict:
+                           metric_func: Callable[[Any], float] | None = None) -> dict:
         """Run experiment with all variants"""
         if exp_id not in self.experiments:
             return {"error": "Experiment not found"}
