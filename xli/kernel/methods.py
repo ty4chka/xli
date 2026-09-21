@@ -301,6 +301,41 @@ def build_kernel(
 
         return {"history": get_healing_engine().error_history}
 
+    # ------------------------------------------------------------ recommend
+    @server.method(
+        "recommend.for_task", required=("task",), doc="Suggest MCP servers and skills for a task."
+    )
+    def recommend_for_task(task: str, agent: str = "coder"):
+        from xli.mcp.recommender import get_recommender
+
+        return get_recommender().recommend_for_task(task)
+
+    @server.method(
+        "recommend.context", required=("task",), doc="Full recommended context block for a task."
+    )
+    def recommend_context(task: str, agent: str = "coder"):
+        from xli.mcp.recommender import get_recommender
+
+        return {"context": get_recommender().build_full_context(task, agent)}
+
+    @server.method("mcp.servers", doc="All known MCP servers and whether they are enabled.")
+    def mcp_servers():
+        from xli.mcp.registry import MCPRegistry
+
+        return {"servers": MCPRegistry().list_all()}
+
+    @server.method("mcp.set_enabled", required=("name", "enabled"), doc="Enable or disable a server.")
+    def mcp_set_enabled(name: str, enabled: bool):
+        from xli.mcp.recommender import reset_recommender
+        from xli.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.enable(name) if enabled else registry.disable(name)
+        # The recommender caches the registry, so it must be rebuilt.
+        reset_recommender()
+        info = registry.get_server(name)
+        return {"name": name, "enabled": bool(info and info.get("enabled"))}
+
     # ----------------------------------------------------------------- doctor
     @server.method("doctor", doc="Environment report.")
     def doctor():

@@ -121,7 +121,23 @@ class MCPRecommender:
         return "\n\n".join(context_parts)
 
 
+_INSTANCE: MCPRecommender | None = None
+
+
 def get_recommender() -> MCPRecommender:
-    """Get MCPRecommender instance"""
-    return MCPRecommender()
+    """Process-wide MCPRecommender.
+
+    This returned a fresh instance on every call despite the docstring, which
+    rebuilt the MCP registry and re-opened the skills index each time.
+    """
+    global _INSTANCE
+    if _INSTANCE is None:
+        _INSTANCE = MCPRecommender()
+    return _INSTANCE
+
+
+def reset_recommender() -> None:
+    """Drop the singleton — used by tests and after enabling/disabling servers."""
+    global _INSTANCE
+    _INSTANCE = None
 

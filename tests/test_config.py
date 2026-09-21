@@ -98,6 +98,23 @@ class TestDotEnvLoading:
     """The legacy xli/core/config.py loaded ~/.xli/.env; deleting that module
     silently dropped the feature. These pin it back."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_environ(self):
+        """Loading .env writes into the real process environment.
+
+        That is the intended behaviour — api_key() reads os.environ — but it
+        means monkeypatch cannot undo it: delenv() before the load does not
+        know which names the file will add. Without this, XLI_PROVIDER and
+        friends leak into every later test in the session.
+        """
+        import os
+
+        snapshot = dict(os.environ)
+        yield
+        os.environ.clear()
+        os.environ.update(snapshot)
+        reset_config()
+
     def test_key_from_dotenv_reaches_api_key(self, tmp_path, monkeypatch):
         (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-from-dotenv\n", encoding="utf-8")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

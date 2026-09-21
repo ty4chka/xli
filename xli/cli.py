@@ -506,6 +506,49 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_ENVIRONMENT if blocking else EXIT_OK
 
 
+def cmd_recommend(args: argparse.Namespace) -> int:
+    """Suggest the MCP servers and skills that fit a task."""
+    from xli.mcp.recommender import get_recommender
+
+    task = " ".join(args.task).strip()
+    if not task:
+        print("usage: xli recommend <task description>", file=sys.stderr)
+        return EXIT_USAGE
+
+    recommender = get_recommender()
+
+    if args.context:
+        block = recommender.build_full_context(task, args.agent)
+        if args.json:
+            _emit({"context": block}, True)
+        else:
+            print(block)
+        return EXIT_OK
+
+    rec = recommender.recommend_for_task(task)
+    if args.json:
+        _emit(rec, True)
+        return EXIT_OK
+
+    servers = rec.get("mcp_servers", [])
+    scores = rec.get("mcp_scores", {})
+    skills = rec.get("skills", [])
+    print(STYLE.bold("MCP servers"))
+    if servers:
+        for name in servers:
+            print(f"  {STYLE.green('+')} {name:<20} {STYLE.dim(f'relevance {scores.get(name, 0):.2f}')}")
+    else:
+        print(STYLE.dim("  none above the relevance threshold"))
+    print()
+    print(STYLE.bold("Skills"))
+    if skills:
+        for name in skills:
+            print(f"  {STYLE.green('+')} {name}")
+    else:
+        print(STYLE.dim("  no matching skills"))
+    return EXIT_OK
+
+
 def cmd_scout(args: argparse.Namespace) -> int:
     """Scan the project and report (or write) AGENTS.md."""
     from xli.core.context_scout import ContextScout
@@ -799,6 +842,14 @@ def build_parser() -> argparse.ArgumentParser:
     nvim.add_argument("--target", help="install into this directory instead of the nvim config")
     nvim.add_argument("--json", action="store_true")
     nvim.set_defaults(func=cmd_nvim)
+
+    # --- recommend
+    recommend = sub.add_parser("recommend", help="suggest MCP servers and skills for a task")
+    recommend.add_argument("task", nargs="*", help="what you are about to do")
+    recommend.add_argument("--agent", default="coder", help="role to tailor skills for")
+    recommend.add_argument("--context", action="store_true", help="print the full context block")
+    recommend.add_argument("--json", action="store_true")
+    recommend.set_defaults(func=cmd_recommend)
 
     # --- scout
     scout = sub.add_parser("scout", help="scan the project, generate AGENTS.md")

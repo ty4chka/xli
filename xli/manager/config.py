@@ -58,6 +58,11 @@ DEFAULTS: dict[str, Any] = {
     # --- mcp
     "mcp.enabled": True,
     "mcp.servers": [],
+    #: Server names turned off, overriding the registry default. Mirrors
+    #: tools.disabled so the two subsystems behave the same way.
+    "mcp.disabled": [],
+    #: Server names explicitly turned on (needed because four ship disabled).
+    "mcp.enabled_servers": [],
     # --- ui
     "ui.theme": "dark",
     "ui.language": "ru",
@@ -119,6 +124,8 @@ COERCERS: dict[str, Callable[[Any], Any]] = {
     "permissions.deny": _as_list,
     "permissions.allow": _as_list,
     "tools.disabled": _as_list,
+    "mcp.disabled": _as_list,
+    "mcp.enabled_servers": _as_list,
     "tools.bash_timeout": _as_int,
     "kernel.enabled": _as_bool,
     "kernel.auto_build": _as_bool,
@@ -276,7 +283,17 @@ class Config:
 
     # ------------------------------------------------------------- persistence
     def save(self, path: Path | None = None) -> Path:
-        target = Path(path) if path else (self.project_file or self.user_file)
+        """Write the non-default keys to disk.
+
+        Defaults to the *user* config, because user_path() is what honours
+        XLI_CONFIG_DIR. This used to prefer project_file, so XLI_CONFIG_DIR was
+        respected when reading and silently ignored when writing — a config dir
+        override that only half worked, and one that wrote into the current
+        repository instead of the directory the caller asked for.
+
+        Pass path= explicitly to write a project-level config.
+        """
+        target = Path(path) if path else (self.user_file or self.project_file)
         target.parent.mkdir(parents=True, exist_ok=True)
         # Write only what differs from the defaults, so the file stays readable
         # and a future default change still applies.

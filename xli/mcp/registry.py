@@ -120,12 +120,70 @@ class MCPRegistry:
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, config: Any = None):
         if self._initialized:
             return
         self._initialized = True
-        self.servers = SERVERS.copy()
+        # Deep-ish copy: the module-level SERVERS must not be mutated by
+        # enable()/disable(), or a disabled server would stay disabled for
+        # every registry built later in the same process.
+        self.servers = {name: dict(info) for name, info in SERVERS.items()}
+        self._config = config
+        self._apply_config(config if config is not None else self._load_config())
         logger.log_structured("INFO", "mcp.registry", f"Loaded {len(self.servers)} servers")
+
+    @staticmethod
+    def _load_config():
+        try:
+            from xli.manager.config import get_config
+
+            return get_config()
+        except Exception:  # noqa: BLE001 - a broken config must not stop the registry
+            return None
+
+    def _apply_config(self, config: Any) -> None:
+        """Let the config override the built-in enabled flags.
+
+        Without this, enable()/disable() only mutated an in-memory dict, so
+        `mcp.set_enabled` over RPC reported success and the change evaporated
+        on the next start.
+        """
+        if config is None:
+            return
+        try:
+            disabled = set(config.get("mcp.disabled") or [])
+            forced_on = set(config.get("mcp.enabled_servers") or [])
+        except Exception:  # noqa: BLE001
+            return
+        for name in self.servers:
+            if name in disabled:
+                self.servers[name]["enabled"] = False
+            elif name in forced_on:
+                self.servers[name]["enabled"] = True
+
+    def _persist(self, name: str, enabled: bool) -> bool:
+        """Record the change in the config so it survives a restart."""
+        config = self._config if self._config is not None else self._load_config()
+        if config is None:
+            return False
+        try:
+            disabled = list(config.get("mcp.disabled") or [])
+            forced_on = list(config.get("mcp.enabled_servers") or [])
+            if enabled:
+                disabled = [n for n in disabled if n != name]
+                if SERVERS.get(name, {}).get("enabled") is not True and name not in forced_on:
+                    forced_on.append(name)
+            else:
+                forced_on = [n for n in forced_on if n != name]
+                if name not in disabled:
+                    disabled.append(name)
+            config.set("mcp.disabled", disabled)
+            config.set("mcp.enabled_servers", forced_on)
+            config.save()
+            return True
+        except Exception as exc:  # noqa: BLE001 - report, do not crash the caller
+            logger.log_error("mcp.registry", f"could not persist {name}", exc=exc)
+            return False
 
     def get_server(self, name: str) -> dict | None:
         """Get server definition"""
@@ -147,15 +205,19 @@ class MCPRegistry:
             for name, info in self.servers.items()
         ]
 
-    def enable(self, name: str):
-        """Enable server"""
-        if name in self.servers:
-            self.servers[name]["enabled"] = True
+    def enable(self, name: str) -> bool:
+        """Enable a server and persist the choice. Returns False if unknown."""
+        if name not in self.servers:
+            return False
+        self.servers[name]["enabled"] = True
+        return self._persist(name, True)
 
-    def disable(self, name: str):
-        """Disable server"""
-        if name in self.servers:
-            self.servers[name]["enabled"] = False
+    def disable(self, name: str) -> bool:
+        """Disable a server and persist the choice. Returns False if unknown."""
+        if name not in self.servers:
+            return False
+        self.servers[name]["enabled"] = False
+        return self._persist(name, False)
 
 
 def get_registry() -> MCPRegistry:
