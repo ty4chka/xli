@@ -3,7 +3,7 @@
 XLI MCP Client — unified MCP client
 """
 
-from typing import Dict, Any, Optional
+from typing import Any
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.mcp.client")
@@ -15,9 +15,9 @@ class MCPClient:
     def __init__(self):
         logger.log_structured("INFO", "mcp.client", "Initialized")
 
-    async def call_tool(self, server_name: str, tool: str, params: Dict) -> Any:
+    async def call_tool(self, server_name: str, tool: str, params: dict) -> Any:
         """Call tool on MCP server"""
-        logger.log_structured("DEBUG", "mcp.client", 
+        logger.log_structured("DEBUG", "mcp.client",
                              f"Calling {server_name}.{tool}", {"params": str(params)[:100]})
         # Placeholder — would connect to actual MCP server
         return {"status": "ok", "result": f"MCP {server_name}.{tool} called"}

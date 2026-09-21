@@ -11,7 +11,6 @@ import os
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
 
 
 # ANSI color codes
@@ -125,7 +124,7 @@ def format_log_line(timestamp: str, level: str, component: str, message: str,
 class StructuredLogger:
     """Structured logging with multiple outputs"""
 
-    _instances: Dict[str, "StructuredLogger"] = {}
+    _instances: dict[str, "StructuredLogger"] = {}
 
     def __new__(cls, name: str):
         if name not in cls._instances:
@@ -166,8 +165,11 @@ class StructuredLogger:
         self.structured_path = self.log_dir / "structured.log"
 
         # Console with colors
-        self.use_colors = sys.stdout.isatty() and "NO_COLOR" not in os.environ
-        ch = logging.StreamHandler(sys.stdout)
+        self.use_colors = sys.stderr.isatty() and "NO_COLOR" not in os.environ
+        # Diagnostics go to stderr. Anything on stdout is program output that a
+        # caller may pipe or parse (`xli tools schema --json`), and a stray log
+        # line there turns valid JSON into garbage.
+        ch = logging.StreamHandler(sys.stderr)
         ch.setLevel(logging.INFO)
         ch.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(ch)
@@ -186,7 +188,7 @@ class StructuredLogger:
         sys.excepthook = hook
 
     def log_structured(self, level: str, component: str, message: str,
-                       details: Optional[Dict] = None, exc_info: Optional[str] = None):
+                       details: dict | None = None, exc_info: str | None = None):
         """Write structured JSONL log + colored console output"""
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
@@ -210,19 +212,22 @@ class StructuredLogger:
         # Colored console output
         colored_line = format_log_line(timestamp, level, component, message, self.use_colors)
 
-        # Also to standard logger (file only, console gets colored)
-        method = getattr(self.logger, level.lower(), self.logger.info)
+        # Also to standard logger (file only, console gets colored).
+        # logging.Logger.warn() is a deprecated alias — route WARN -> warning.
+        _LEVEL_METHODS = {"WARN": "warning", "FATAL": "critical"}
+        method_name = _LEVEL_METHODS.get(level.upper(), level.lower())
+        method = getattr(self.logger, method_name, self.logger.info)
         method(colored_line)
 
-    def log_error(self, component: str, message: str, exc: Optional[Exception] = None,
-                  details: Optional[Dict] = None):
+    def log_error(self, component: str, message: str, exc: Exception | None = None,
+                  details: dict | None = None):
         """Unified error logging"""
         self._error_count += 1
         exc_str = traceback.format_exc() if exc else None
         self.log_structured("ERROR", component, message, details, exc_str)
         self.logger.error(f"[{component}] {message}", exc_info=exc is not None)
 
-    def log_nvim_error(self, source: str, message: str, details: Optional[Dict] = None):
+    def log_nvim_error(self, source: str, message: str, details: dict | None = None):
         """Log nvim-side errors to shared file"""
         self.log_structured("ERROR", f"nvim.{source}", message, details)
         nvim_err = self.log_dir / "nvim_errors.log"

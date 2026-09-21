@@ -17,11 +17,11 @@ def generate_pdoc(module_path, output_dir="docs"):
             text=True,
             timeout=60
         )
-        
+
         if result.returncode == 0:
             return f"✅ Documentation generated in {output_dir}/\n{result.stdout}"
         return f"pdoc error:\n{result.stderr}"
-        
+
     except FileNotFoundError:
         return "pdoc not installed. pip install pdoc"
     except Exception as e:
@@ -34,18 +34,18 @@ def generate_sphinx(source_dir=".", output_dir="_build"):
         conf = Path(source_dir) / "conf.py"
         if not conf.exists():
             return "No conf.py found. Run sphinx-quickstart first."
-        
+
         result = subprocess.run(
             ["sphinx-build", "-b", "html", source_dir, output_dir],
             capture_output=True,
             text=True,
             timeout=120
         )
-        
+
         if result.returncode == 0:
             return f"✅ Sphinx docs built in {output_dir}/\n{result.stdout[:500]}"
         return f"Sphinx error:\n{result.stderr[:500]}"
-        
+
     except FileNotFoundError:
         return "sphinx not installed. pip install sphinx"
     except Exception as e:
@@ -58,21 +58,21 @@ def generate_mkdocs(docs_dir="docs", serve=False):
         config = Path("mkdocs.yml")
         if not config.exists():
             return "No mkdocs.yml found. Run mkdocs new . first."
-        
+
         if serve:
             return "Use mkdocs serve separately for preview"
-        
+
         result = subprocess.run(
             ["mkdocs", "build"],
             capture_output=True,
             text=True,
             timeout=60
         )
-        
+
         if result.returncode == 0:
             return f"✅ MkDocs built\n{result.stdout}"
         return f"MkDocs error:\n{result.stderr}"
-        
+
     except FileNotFoundError:
         return "mkdocs not installed. pip install mkdocs"
     except Exception as e:
@@ -87,17 +87,17 @@ TOOLS = {
 def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
-    
+
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})
-        
+
         if tool in TOOLS:
             try:
                 result = TOOLS[tool](**args)
@@ -108,9 +108,9 @@ def handle_request(request):
                 }
             except Exception as e:
                 return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}
-        
+
         return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown tool: {tool}"}, "id": req_id}
-    
+
     return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}, "id": req_id}
 
 def main():

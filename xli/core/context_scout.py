@@ -4,11 +4,9 @@ XLI Context Scout + AGENTS.md Generator
 Auto-discovers project structure and coding patterns
 """
 
-import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Set
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 from xli.core.logger import StructuredLogger
 
@@ -20,20 +18,20 @@ class ProjectPattern:
     """Discovered coding pattern"""
     name: str
     description: str
-    files: List[str]
+    files: list[str]
     example: str
 
 
-@dataclass  
+@dataclass
 class ProjectContext:
     """Full project context for AGENTS.md"""
     name: str
     language: str
     framework: str
-    patterns: List[ProjectPattern]
-    key_files: List[str]
-    dependencies: List[str]
-    conventions: List[str]
+    patterns: list[ProjectPattern]
+    key_files: list[str]
+    dependencies: list[str]
+    conventions: list[str]
 
 
 class ContextScout:
@@ -41,8 +39,8 @@ class ContextScout:
 
     def __init__(self, project_path: str = "."):
         self.project_path = Path(project_path).resolve()
-        self.patterns: List[ProjectPattern] = []
-        self.key_files: List[str] = []
+        self.patterns: list[ProjectPattern] = []
+        self.key_files: list[str] = []
 
     def scan(self) -> ProjectContext:
         """Full project scan"""
@@ -133,7 +131,7 @@ class ContextScout:
                 for key, name in frameworks.items():
                     if key in dep.lower():
                         return name
-        except:
+        except Exception:
             pass
         return 'Node.js'
 
@@ -144,7 +142,7 @@ class ContextScout:
         for f in files:
             try:
                 content += f.read_text()[:500]
-            except:
+            except Exception:
                 pass
 
         frameworks = {
@@ -158,7 +156,7 @@ class ContextScout:
 
         return 'Python'
 
-    def _find_key_files(self) -> List[str]:
+    def _find_key_files(self) -> list[str]:
         """Find important project files"""
         key_patterns = [
             'README*', 'LICENSE*', 'CONTRIBUTING*', 'CHANGELOG*',
@@ -178,7 +176,7 @@ class ContextScout:
 
         return found[:30]  # Limit
 
-    def _discover_patterns(self) -> List[ProjectPattern]:
+    def _discover_patterns(self) -> list[ProjectPattern]:
         """Discover coding patterns from source files"""
         patterns = []
 
@@ -216,7 +214,7 @@ class ContextScout:
                         example=self._extract_example(content, 'def ')
                     ))
 
-            except:
+            except Exception:
                 pass
 
         # Deduplicate
@@ -238,7 +236,7 @@ class ContextScout:
         end = min(len(content), idx + 300)
         return content[start:end].strip()
 
-    def _extract_conventions(self) -> List[str]:
+    def _extract_conventions(self) -> list[str]:
         """Extract coding conventions"""
         conventions = []
 
@@ -256,7 +254,7 @@ class ContextScout:
 
         return conventions
 
-    def _get_dependencies(self) -> List[str]:
+    def _get_dependencies(self) -> list[str]:
         """Get project dependencies"""
         deps = []
 
@@ -267,7 +265,7 @@ class ContextScout:
                 for line in req.read_text().split('\n')[:20]:
                     if line.strip() and not line.startswith('#'):
                         deps.append(line.strip().split('==')[0].split('>=')[0])
-            except:
+            except Exception:
                 pass
 
         # Node
@@ -277,7 +275,7 @@ class ContextScout:
                 data = json.loads(pkg.read_text())
                 for dep in list(data.get('dependencies', {}).keys())[:20]:
                     deps.append(dep)
-            except:
+            except Exception:
                 pass
 
         return deps

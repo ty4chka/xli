@@ -6,7 +6,6 @@ XLI Utils — FileOps: atomic writes
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 from xli.core.logger import StructuredLogger
 
@@ -43,7 +42,7 @@ class FileOps:
             logger.log_error("file", f"Atomic write failed: {path}", exc=e)
             try:
                 os.unlink(temp_path)
-            except:
+            except Exception:
                 pass
             return False
 

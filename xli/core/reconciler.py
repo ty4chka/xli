@@ -27,9 +27,8 @@ maybe_run() give a minimal, dependency-free way to do the latter.
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
-from xli.core.layers import LayerStore, LayerMeta
+from xli.core.layers import LayerStore
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.reconciler")
@@ -38,8 +37,8 @@ logger = StructuredLogger("xli.reconciler")
 @dataclass
 class VerifyReport:
     checked: int = 0
-    drifted: List[str] = field(default_factory=list)     # layer_ids whose hash no longer matches
-    missing: List[str] = field(default_factory=list)      # layer_ids whose content file is gone
+    drifted: list[str] = field(default_factory=list)     # layer_ids whose hash no longer matches
+    missing: list[str] = field(default_factory=list)      # layer_ids whose content file is gone
 
     @property
     def clean(self) -> bool:
@@ -56,8 +55,8 @@ class VerifyReport:
 
 @dataclass
 class ConsolidateReport:
-    archived: List[str] = field(default_factory=list)
-    best_layer: Optional[str] = None
+    archived: list[str] = field(default_factory=list)
+    best_layer: str | None = None
     kept_hot: int = 0
 
 
@@ -86,7 +85,7 @@ class Reconciler:
 
     # ---- picking the best version ---------------------------------------
 
-    def find_best(self) -> Optional[str]:
+    def find_best(self) -> str | None:
         """The most recent layer tagged 'working' — i.e. the newest code
         version that actually passed its tests, not just the newest version.
         Falls back to the 'last_good' ref, then to HEAD, if no tagged layer
@@ -101,7 +100,7 @@ class Reconciler:
 
     # ---- consolidation / archiving ---------------------------------------
 
-    def consolidate(self, keep_recent: int = 20, keep_tags: Optional[List[str]] = None) -> ConsolidateReport:
+    def consolidate(self, keep_recent: int = 20, keep_tags: list[str] | None = None) -> ConsolidateReport:
         """Archive full content for layers that are: not among the
         `keep_recent` most recent, not pointed to by any ref, and not tagged
         with anything in `keep_tags` (defaults to 'working'). The layer stays
@@ -139,7 +138,7 @@ class Reconciler:
 
     # ---- restoring the best known version --------------------------------
 
-    def checkout_best(self, dest_root: Optional[str] = None, dry_run: bool = False) -> Optional[dict]:
+    def checkout_best(self, dest_root: str | None = None, dry_run: bool = False) -> dict | None:
         """Restore project files to the state of find_best() — the newest
         layer actually tagged 'working', or the best available fallback.
         Returns None if there's nothing to check out yet (empty store)."""
@@ -167,12 +166,12 @@ class IdleReconciler:
         self.reconciler = Reconciler(store)
         self.idle_threshold_seconds = idle_threshold_seconds
         self._last_activity = time.time()
-        self._last_run: Optional[float] = None
+        self._last_run: float | None = None
 
     def note_activity(self):
         self._last_activity = time.time()
 
-    def maybe_run(self) -> Optional[dict]:
+    def maybe_run(self) -> dict | None:
         idle_for = time.time() - self._last_activity
         if idle_for < self.idle_threshold_seconds:
             return None

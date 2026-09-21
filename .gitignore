@@ -47,3 +47,14 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Cython kernel build output (rebuild with `xli kernel build`)
+xli/_ckernel/
+xli/core/*.c
+*.pyd
+
+# Sessions and per-project agent state
+.xli/
+
+# Vendored reference archive
+beecode-main.zip

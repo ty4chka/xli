@@ -6,7 +6,6 @@ MCP Git Server — status, diff, commit, branch, stash
 import json
 import sys
 import subprocess
-from pathlib import Path
 
 def run_git(args, cwd="."):
     """Run git command safely"""
@@ -26,11 +25,11 @@ def git_status(cwd="."):
     code, stdout, stderr = run_git(["status", "--porcelain", "-b"], cwd)
     if code != 0:
         return f"Error: {stderr}"
-    
+
     lines = stdout.strip().split("\n")
     branch_line = lines[0] if lines else ""
     files = []
-    
+
     for line in lines[1:]:
         if line:
             status = line[:2]
@@ -39,7 +38,7 @@ def git_status(cwd="."):
                 "status": status,
                 "file": filename
             })
-    
+
     return json.dumps({
         "branch": branch_line.replace("## ", "").split("...")[0] if branch_line else "unknown",
         "files": files
@@ -49,7 +48,7 @@ def git_diff(cwd=".", staged=False):
     args = ["diff"]
     if staged:
         args.append("--staged")
-    
+
     code, stdout, stderr = run_git(args, cwd)
     if code != 0:
         return f"Error: {stderr}"
@@ -58,7 +57,7 @@ def git_diff(cwd=".", staged=False):
 def git_commit(message, cwd=".", add_all=True):
     if add_all:
         run_git(["add", "-A"], cwd)
-    
+
     code, stdout, stderr = run_git(["commit", "-m", message], cwd)
     if code == 0:
         return f"Committed: {message}\n{stdout}"
@@ -68,13 +67,13 @@ def git_branch(name, checkout=True, cwd="."):
     code, stdout, stderr = run_git(["branch", name], cwd)
     if code != 0:
         return f"Error creating branch: {stderr}"
-    
+
     if checkout:
         code, stdout, stderr = run_git(["checkout", name], cwd)
         if code != 0:
             return f"Branch created but checkout failed: {stderr}"
         return f"Created and checked out: {name}"
-    
+
     return f"Created branch: {name}"
 
 def git_stash(cwd=".", message=None, pop=False):
@@ -83,11 +82,11 @@ def git_stash(cwd=".", message=None, pop=False):
         if code == 0:
             return f"Stash popped:\n{stdout}"
         return f"Error: {stderr}"
-    
+
     args = ["stash", "push"]
     if message:
         args.extend(["-m", message])
-    
+
     code, stdout, stderr = run_git(args, cwd)
     if code == 0:
         return f"Stashed: {stdout}"
@@ -99,7 +98,7 @@ def git_log(cwd=".", limit=10, format="oneline"):
         args.append("--oneline")
     elif format == "stat":
         args.append("--stat")
-    
+
     code, stdout, stderr = run_git(args, cwd)
     if code == 0:
         return stdout
@@ -117,17 +116,17 @@ TOOLS = {
 def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
-    
+
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})
-        
+
         if tool in TOOLS:
             try:
                 result = TOOLS[tool](**args)
@@ -138,9 +137,9 @@ def handle_request(request):
                 }
             except Exception as e:
                 return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}
-        
+
         return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown tool: {tool}"}, "id": req_id}
-    
+
     return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}, "id": req_id}
 
 def main():

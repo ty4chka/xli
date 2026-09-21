@@ -5,7 +5,6 @@ Like OpenCode: Plan = read-only analysis, Build = can modify files
 """
 
 from enum import Enum
-from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 from xli.core.logger import StructuredLogger
@@ -97,7 +96,7 @@ class ModeSwitcher:
 
         config = MODE_CONFIGS[new_mode]
 
-        self.logger.log_structured("INFO", "mode", 
+        self.logger.log_structured("INFO", "mode",
                                   f"Switched from {old_mode.value} to {new_mode.value}")
 
         return config
@@ -135,7 +134,7 @@ class ModeSwitcher:
 
 
 # Global mode switcher instance
-_mode_switcher: Optional[ModeSwitcher] = None
+_mode_switcher: ModeSwitcher | None = None
 
 
 def get_mode_switcher() -> ModeSwitcher:

@@ -4,7 +4,6 @@ XLI Utils — SafeShell: dangerous check, timeout
 """
 
 import subprocess
-from typing import List, Optional
 
 from xli.core.logger import StructuredLogger
 
@@ -23,7 +22,7 @@ class SafeShell:
     """Safe shell execution with validation"""
 
     @staticmethod
-    def is_dangerous(cmd: str) -> Optional[str]:
+    def is_dangerous(cmd: str) -> str | None:
         """Check if command is dangerous. Returns reason or None."""
         cmd_lower = cmd.lower().strip()
 
@@ -44,7 +43,7 @@ class SafeShell:
         return None
 
     @staticmethod
-    def run(cmd: str, timeout: int = 30, cwd: Optional[str] = None,
+    def run(cmd: str, timeout: int = 30, cwd: str | None = None,
             capture: bool = True) -> subprocess.CompletedProcess:
         """Run shell command safely"""
         danger = SafeShell.is_dangerous(cmd)

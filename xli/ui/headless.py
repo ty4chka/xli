@@ -2,13 +2,12 @@
 """
 XLI Headless UI v4.1 — FIXED: субагенты через TaskTool, умная обработка ошибок
 """
-import asyncio, json
+import json
 from argparse import Namespace
-from typing import Optional, Dict, Any
 from xli.ui.base import XliUI
 from xli.core.env import EnvironmentAdapter
-from xli.core.logger import StructuredLogger, print_banner, print_step_header, print_agent_output, COLORS
-from xli.core.multistep import MultiStepAgent, TaskTool  # NEW
+from xli.core.logger import StructuredLogger, print_banner, COLORS
+from xli.core.multistep import MultiStepAgent  # NEW
 
 logger = StructuredLogger("xli.ui.headless")
 
@@ -122,7 +121,7 @@ Delegate complex sub-tasks to them and combine results.""",
             print("\n" + "=" * 60)
             print("Done!" if success else "Failed")
 
-    def display(self, text: str, title: Optional[str] = None):
+    def display(self, text: str, title: str | None = None):
         if title:
             print(f"\n=== {title} ===")
         print(text)

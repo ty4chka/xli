@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xli-pro"
-version = "4.0.0"
-description = "🔥 XLI PRO v4 — AI Coding Assistant Framework"
+version = "6.0.0"
+description = "XLI PRO v6 — AI coding agent kernel: JSON-RPC core, Cython-accelerated, CLI/TUI/Neovim frontends"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -51,12 +51,12 @@ Issues = "https://github.com/xli/xli/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["xli*", "nvim_plugin*"]
+include = ["xli*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-"xli.skills" = ["*.md"]
-"nvim_plugin" = ["*.lua"]
+"xli.skills" = ["*.md", "**/*.md", "**/*.html", "**/*.js", "**/*.cjs", "**/*.sh"]
+"xli.nvim" = ["plugin_root/lua/xli/*.lua", "plugin_root/plugin/*.lua"]
 
 [tool.black]
 line-length = 100
@@ -65,8 +65,10 @@ target-version = ['py310', 'py311', 'py312']
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]
-ignore = ["E501"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "UP", "B", "C4", "SIM", "E722"]
+ignore = ["E501", "B905", "B027", "SIM108", "SIM105"]
 
 [tool.mypy]
 python_version = "3.10"

@@ -3,7 +3,7 @@
 XLI MCP Registry — server definitions and management
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Any
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.mcp.registry")
@@ -127,7 +127,7 @@ class MCPRegistry:
         self.servers = SERVERS.copy()
         logger.log_structured("INFO", "mcp.registry", f"Loaded {len(self.servers)} servers")
 
-    def get_server(self, name: str) -> Optional[Dict]:
+    def get_server(self, name: str) -> dict | None:
         """Get server definition"""
         return self.servers.get(name)
 
@@ -136,11 +136,11 @@ class MCPRegistry:
         server = self.servers.get(name)
         return server.get("enabled", False) if server else False
 
-    def list_enabled(self) -> List[str]:
+    def list_enabled(self) -> list[str]:
         """List enabled server names"""
         return [name for name, info in self.servers.items() if info.get("enabled", False)]
 
-    def list_all(self) -> List[Dict]:
+    def list_all(self) -> list[dict]:
         """List all servers with status"""
         return [
             {"name": name, "description": info.get("description", ""), "enabled": info.get("enabled", False)}
@@ -163,7 +163,7 @@ def get_registry() -> MCPRegistry:
     return MCPRegistry()
 
 
-def get_available_servers() -> Dict[str, Any]:
+def get_available_servers() -> dict[str, Any]:
     """Get available servers (for env.py)"""
     registry = get_registry()
     return {name: info for name, info in registry.servers.items() if info.get("enabled", False)}

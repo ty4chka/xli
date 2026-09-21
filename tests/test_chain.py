@@ -64,7 +64,13 @@ def test_run_chain_with_self_correction_enabled_still_completes(tmp_path):
     store = LayerStore(root=str(tmp_path / "layers"))
 
     test_file = str(tmp_path / "test_thing.py")
-    write_test_tool = f'<tool>{_json.dumps({"name": "write", "args": {"path": test_file, "content": "def test_ok():\\n    assert True\\n"}})}</tool>'
+    # NOTE: built outside the f-string — Python < 3.12 forbids backslashes in the
+    # expression part of an f-string, and the payload needs real newlines.
+    write_payload = _json.dumps({
+        "name": "write",
+        "args": {"path": test_file, "content": "def test_ok():\n    assert True\n"},
+    })
+    write_test_tool = f"<tool>{write_payload}</tool>"
 
     responses = [
         "planned it",                    # PLANNER
@@ -116,7 +122,11 @@ def test_assisted_mode_auto_enables_self_correction(tmp_path):
     from xli.core.chain import XliCore, AutonomyMode
 
     test_file = str(tmp_path / "test_x.py")
-    write_test = f'<tool>{_json.dumps({"name": "write", "args": {"path": test_file, "content": "def test_ok():\\n    assert True\\n"}})}</tool>'
+    write_payload2 = _json.dumps({
+        "name": "write",
+        "args": {"path": test_file, "content": "def test_ok():\n    assert True\n"},
+    })
+    write_test = f"<tool>{write_payload2}</tool>"
     responses = ["plan", "code", "debug", write_test, "coder loop pass", "opt", "rev"]
     env, store, provider = _fake_chain_env_and_store(tmp_path, extra=responses)
 
@@ -163,7 +173,7 @@ def test_autonomous_mode_reconciles_on_real_idle_gap_between_calls(tmp_path):
 
 def test_invalid_mode_raises():
     import pytest as _pytest
-    from xli.core.chain import XliCore, AutonomyMode
+    from xli.core.chain import XliCore
     from xli.core.env import EnvironmentAdapter
     with _pytest.raises(ValueError):
         XliCore(EnvironmentAdapter(), mode="definitely-not-a-real-mode")

@@ -5,7 +5,6 @@ XLI Git Integration v4 — Auto-commit, branch, stash, diff
 
 import subprocess
 from pathlib import Path
-from typing import Optional, List, Dict
 from datetime import datetime
 
 from xli.core.logger import StructuredLogger
@@ -15,18 +14,18 @@ logger = StructuredLogger("xli.git")
 
 class GitIntegration:
     """Git operations for XLI"""
-    
-    def __init__(self, repo_path: Optional[str] = None):
+
+    def __init__(self, repo_path: str | None = None):
         self.repo_path = Path(repo_path) if repo_path else Path.cwd()
         self._check_git()
-    
+
     def _check_git(self):
         """Check if directory is git repo"""
         git_dir = self.repo_path / ".git"
         if not git_dir.exists():
             logger.log_structured("WARN", "git", "Not a git repository")
-    
-    def _run(self, cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
+
+    def _run(self, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
         """Run git command"""
         full_cmd = ["git", "-C", str(self.repo_path)] + cmd
         try:
@@ -39,65 +38,65 @@ class GitIntegration:
             )
             return result
         except subprocess.CalledProcessError as e:
-            logger.log_error("git", f"Git command failed: {' '.join(cmd)}", 
+            logger.log_error("git", f"Git command failed: {' '.join(cmd)}",
                             details={"stderr": e.stderr})
             raise
         except Exception as e:
             logger.log_error("git", f"Git error: {e}")
             raise
-    
-    def get_status(self) -> Dict[str, List[str]]:
+
+    def get_status(self) -> dict[str, list[str]]:
         """Get git status"""
         try:
             result = self._run(["status", "--porcelain"], check=False)
-            
+
             modified = []
             untracked = []
             staged = []
-            
+
             for line in result.stdout.strip().split("\n"):
                 if not line:
                     continue
                 status = line[:2]
                 file = line[3:].strip()
-                
+
                 if status.startswith("M") or status.startswith(" A"):
                     staged.append(file)
                 elif status.startswith(" M") or status.startswith(" D"):
                     modified.append(file)
                 elif status.startswith("??"):
                     untracked.append(file)
-            
+
             return {
                 "modified": modified,
                 "untracked": untracked,
                 "staged": staged
             }
-            
+
         except Exception as e:
             logger.log_error("git", "Status failed", exc=e)
             return {"modified": [], "untracked": [], "staged": []}
-    
-    def auto_commit(self, message: Optional[str] = None) -> str:
+
+    def auto_commit(self, message: str | None = None) -> str:
         """Auto-commit all changes"""
         if not message:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             message = f"XLI auto-commit {timestamp}"
-        
+
         try:
             # Stage all
             self._run(["add", "-A"])
-            
+
             # Commit
             result = self._run(["commit", "-m", message])
-            
+
             logger.log_structured("INFO", "git", f"Auto-committed: {message}")
             return f"Committed: {message}"
-            
+
         except Exception as e:
             logger.log_error("git", "Auto-commit failed", exc=e)
             return f"Failed: {e}"
-    
+
     def create_branch(self, name: str, checkout: bool = True) -> str:
         """Create and optionally checkout branch"""
         try:
@@ -109,8 +108,8 @@ class GitIntegration:
         except Exception as e:
             logger.log_error("git", "Branch creation failed", exc=e)
             return f"Failed: {e}"
-    
-    def stash(self, message: Optional[str] = None) -> str:
+
+    def stash(self, message: str | None = None) -> str:
         """Stash changes"""
         try:
             cmd = ["stash", "push"]
@@ -122,7 +121,7 @@ class GitIntegration:
         except Exception as e:
             logger.log_error("git", "Stash failed", exc=e)
             return f"Failed: {e}"
-    
+
     def unstash(self) -> str:
         """Pop stash"""
         try:
@@ -132,7 +131,7 @@ class GitIntegration:
         except Exception as e:
             logger.log_error("git", "Unstash failed", exc=e)
             return f"Failed: {e}"
-    
+
     def get_diff_since_last(self) -> str:
         """Get diff since last commit"""
         try:
@@ -141,8 +140,8 @@ class GitIntegration:
         except Exception as e:
             logger.log_error("git", "Diff failed", exc=e)
             return ""
-    
-    def get_log(self, limit: int = 10) -> List[Dict]:
+
+    def get_log(self, limit: int = 10) -> list[dict]:
         """Get commit log"""
         try:
             result = self._run([
@@ -150,7 +149,7 @@ class GitIntegration:
                 "--pretty=format:%H|%s|%an|%ad",
                 "--date=short"
             ], check=False)
-            
+
             commits = []
             for line in result.stdout.strip().split("\n"):
                 if "|" in line:
@@ -161,15 +160,15 @@ class GitIntegration:
                         "author": parts[2],
                         "date": parts[3]
                     })
-            
+
             return commits
-            
+
         except Exception as e:
             logger.log_error("git", "Log failed", exc=e)
             return []
 
 
-def get_git(repo_path: Optional[str] = None) -> GitIntegration:
+def get_git(repo_path: str | None = None) -> GitIntegration:
     """Get GitIntegration instance"""
     return GitIntegration(repo_path)
 

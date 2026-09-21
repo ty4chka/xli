@@ -2,7 +2,6 @@
 # mcp-shell-helper-cli.py — умный автодополнитель команд
 import json
 import sys
-import subprocess
 from pathlib import Path
 from difflib import get_close_matches
 
@@ -24,7 +23,7 @@ def load_history():
             else:
                 lines.append(line.strip())
         return [l for l in lines if l and not l.startswith('#')][-200:]
-    except:
+    except Exception:
         return []
 
 def suggest_command(partial):

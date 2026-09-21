@@ -5,7 +5,7 @@ XLI UI Base v4 — Adapter interface for all UI platforms
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import Any
 
 from xli.core.logger import StructuredLogger
 
@@ -35,74 +35,74 @@ class UIState:
 
 class XliUI(ABC):
     """Abstract base for all UI implementations"""
-    
+
     def __init__(self):
         self.logger = StructuredLogger("xli.ui")
-    
+
     @abstractmethod
-    def display(self, text: str, title: Optional[str] = None):
+    def display(self, text: str, title: str | None = None):
         """Display text output"""
         pass
-    
+
     @abstractmethod
     async def input(self, prompt: str, default: str = "") -> str:
         """Get user input"""
         pass
-    
+
     @abstractmethod
     def notify(self, msg: str, level: str = "info"):
         """Show notification"""
         pass
-    
+
     @abstractmethod
-    def open_buffer(self, content: List[str], name: str = "XLI",
+    def open_buffer(self, content: list[str], name: str = "XLI",
                     filetype: str = "markdown"):
         """Open content buffer"""
         pass
-    
+
     @abstractmethod
     def progress(self, percent: int, message: str = ""):
         """Show progress"""
         pass
-    
+
     @abstractmethod
     def clear(self):
         """Clear display"""
         pass
-    
+
     @abstractmethod
-    def choice(self, question: str, options: List[str], 
-               default: Optional[int] = None) -> int:
+    def choice(self, question: str, options: list[str],
+               default: int | None = None) -> int:
         """Show choice dialog"""
         pass
-    
+
     @abstractmethod
     def confirm(self, question: str) -> bool:
         """Show yes/no dialog"""
         pass
-    
-    def display_result(self, result: Dict[str, Any]):
+
+    def display_result(self, result: dict[str, Any]):
         """Display chain result"""
         self.display("=" * 60, "FIRE XLI PRO v4 — Result")
-        
+
         if result.get("plan"):
             self.display(result["plan"][:500], "PLAN")
-        
+
         if result.get("coder"):
             self.display(result["coder"][:800], "CODER")
-        
+
         if result.get("debugger"):
             self.display(result["debugger"][:500], "DEBUGGER")
-        
+
         if result.get("tester"):
             self.display(result["tester"][:500], "TESTER")
-        
+
         if result.get("optimizer"):
             self.display(result["optimizer"][:500], "OPTIMIZER")
-        
+
         if result.get("reviewer"):
             self.display(result["reviewer"][:500], "REVIEWER")
-        
+
         status = "✅ SUCCESS" if result.get("success") else "❌ FAILED"
         self.display(f"\n{status}")
         self.display("=" * 60)

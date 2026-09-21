@@ -5,9 +5,7 @@ Now with VISIBLE THINKING / REASONING output (single LLM call)
 """
 
 import re
-import json
 from pathlib import Path
-from typing import List, Dict, Optional, Any
 
 from xli.core.logger import StructuredLogger, print_thinking, print_agent_output
 from xli.core.skills import get_skills_manager
@@ -77,7 +75,7 @@ class XliAgent:
         skills_ctx = self.skills.get_skills_context(self.name)
         if skills_ctx:
             logger.log_structured("INFO", f"agent.{self.name}",
-                                 f"Loaded skills context")
+                                 "Loaded skills context")
 
         # Check cache
         if self.use_cache:

@@ -4,10 +4,8 @@ XLI Memory v4 — SQLite conversations, semantic search by history
 """
 
 import sqlite3
-import json
 import hashlib
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from xli.core.logger import StructuredLogger
@@ -19,28 +17,28 @@ MEMORY_DB = Path.home() / ".xli" / "memory.db"
 
 class ConversationMemory:
     """Persistent conversation memory with search"""
-    
+
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self):
         if self._initialized:
             return
         self._initialized = True
-        
+
         self._init_db()
         logger.log_structured("INFO", "memory", "ConversationMemory initialized")
-    
+
     def _init_db(self):
         """Initialize memory database"""
         conn = sqlite3.connect(str(MEMORY_DB))
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY,
@@ -53,18 +51,18 @@ class ConversationMemory:
                 success BOOLEAN
             )
         """)
-        
+
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_timestamp ON conversations(timestamp)
         """)
-        
+
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_keywords ON conversations(keywords)
         """)
-        
+
         conn.commit()
         conn.close()
-    
+
     def _extract_keywords(self, text: str) -> str:
         """Extract keywords from text"""
         # Simple keyword extraction
@@ -89,59 +87,53 @@ class ConversationMemory:
                      "all", "some", "any", "no", "none", "both", "either",
                      "neither", "many", "much", "few", "little", "more",
                      "most", "other", "another", "such", "only", "own",
-                     "same", "so", "than", "too", "very", "just", "now",
+                     "same", "than", "too", "very", "just", "now",
                      "then", "here", "there", "once", "again", "also",
-                     "back", "still", "even", "more", "most", "other",
-                     "some", "such", "only", "own", "same", "so", "than",
-                     "too", "very", "just", "now", "then", "here", "there",
-                     "when", "where", "why", "how", "all", "any", "both",
-                     "each", "few", "more", "most", "other", "some", "such",
-                     "no", "nor", "not", "only", "own", "same", "so", "than",
-                     "too", "very", "can", "will", "just", "should", "now"}
-        
+                     "back", "still", "even", "why", "how", "nor", "not"}
+
         keywords = [w for w in words if len(w) > 3 and w not in stopwords]
         return " ".join(keywords[:20])  # Limit keywords
-    
+
     def save_conversation(self, task: str, result: str, agent: str, success: bool = True):
         """Save conversation to memory"""
         task_hash = hashlib.sha256(task.encode()).hexdigest()[:16]
         keywords = self._extract_keywords(task + " " + result)
-        
+
         try:
             conn = sqlite3.connect(str(MEMORY_DB))
             cursor = conn.cursor()
-            
+
             cursor.execute("""
                 INSERT OR REPLACE INTO conversations 
                 (task_hash, task, result, agent, keywords, success)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (task_hash, task, result, agent, keywords, success))
-            
+
             conn.commit()
             conn.close()
-            
-            logger.log_structured("DEBUG", "memory", "Conversation saved", 
+
+            logger.log_structured("DEBUG", "memory", "Conversation saved",
                                  {"hash": task_hash, "agent": agent})
-            
+
         except Exception as e:
             logger.log_error("memory", "Failed to save conversation", exc=e)
-    
-    def search_memory(self, query: str, limit: int = 5) -> List[Dict]:
+
+    def search_memory(self, query: str, limit: int = 5) -> list[dict]:
         """Search memory by keywords"""
         keywords = self._extract_keywords(query)
         query_terms = keywords.split()
-        
+
         if not query_terms:
             return []
-        
+
         # Build LIKE query
         conditions = " OR ".join(["keywords LIKE ?"] * len(query_terms))
         params = [f"%{term}%" for term in query_terms]
-        
+
         try:
             conn = sqlite3.connect(str(MEMORY_DB))
             cursor = conn.cursor()
-            
+
             cursor.execute(f"""
                 SELECT task, result, agent, timestamp, success
                 FROM conversations
@@ -149,7 +141,7 @@ class ConversationMemory:
                 ORDER BY timestamp DESC
                 LIMIT ?
             """, (*params, limit))
-            
+
             results = []
             for row in cursor.fetchall():
                 results.append({
@@ -159,30 +151,30 @@ class ConversationMemory:
                     "timestamp": row[3],
                     "success": row[4]
                 })
-            
+
             conn.close()
-            
-            logger.log_structured("DEBUG", "memory", 
+
+            logger.log_structured("DEBUG", "memory",
                                  f"Search '{query[:30]}': {len(results)} results")
             return results
-            
+
         except Exception as e:
             logger.log_error("memory", "Search failed", exc=e)
             return []
-    
-    def get_recent(self, limit: int = 10) -> List[Dict]:
+
+    def get_recent(self, limit: int = 10) -> list[dict]:
         """Get recent conversations"""
         try:
             conn = sqlite3.connect(str(MEMORY_DB))
             cursor = conn.cursor()
-            
+
             cursor.execute("""
                 SELECT task, result, agent, timestamp, success
                 FROM conversations
                 ORDER BY timestamp DESC
                 LIMIT ?
             """, (limit,))
-            
+
             results = []
             for row in cursor.fetchall():
                 results.append({
@@ -192,46 +184,46 @@ class ConversationMemory:
                     "timestamp": row[3],
                     "success": row[4]
                 })
-            
+
             conn.close()
             return results
-            
+
         except Exception as e:
             logger.log_error("memory", "Get recent failed", exc=e)
             return []
-    
+
     def get_context_for_task(self, task: str, max_results: int = 3) -> str:
         """Get relevant context from memory for a task"""
         results = self.search_memory(task, limit=max_results)
-        
+
         if not results:
             return ""
-        
+
         context = "\n\n📜 **Relevant History:**\n"
         for r in results:
             status = "✅" if r["success"] else "❌"
             context += f"\n{status} [{r['agent']}] {r['task'][:100]}...\n"
             context += f"   → {r['result'][:150]}...\n"
-        
+
         return context
-    
+
     def clear_old(self, days: int = 30):
         """Clear conversations older than N days"""
         try:
             conn = sqlite3.connect(str(MEMORY_DB))
             cursor = conn.cursor()
-            
-            cursor.execute("""
+
+            cursor.execute(f"""
                 DELETE FROM conversations
-                WHERE timestamp < datetime('now', '-{} days')
-            """.format(days))
-            
+                WHERE timestamp < datetime('now', '-{days} days')
+            """)
+
             deleted = cursor.rowcount
             conn.commit()
             conn.close()
-            
+
             logger.log_structured("INFO", "memory", f"Cleared {deleted} old conversations")
-            
+
         except Exception as e:
             logger.log_error("memory", "Clear old failed", exc=e)
 

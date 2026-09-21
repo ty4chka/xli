@@ -4,7 +4,6 @@ XLI Questionnaire Base — Question dataclass
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 
 @dataclass
@@ -13,7 +12,7 @@ class Question:
     id: str
     question: str
     type: str = "text"  # text, choice, confirm
-    options: Optional[List[str]] = field(default_factory=list)
-    default: Optional[str] = None
+    options: list[str] | None = field(default_factory=list)
+    default: str | None = None
     required: bool = True
 

@@ -3,16 +3,19 @@
 XLI Skills Manager v4 — SQLite FTS, lazy load, 200+ skills
 """
 
+import re
 import sqlite3
-import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.skills")
 
+# Skills ship inside the package; the user directory can add to them or
+# override a bundled skill of the same name. Scanning only the user directory
+# (the original behaviour) left the index permanently empty.
+BUNDLED_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 SKILLS_DIR = Path.home() / ".xli" / "skills"
 SKILLS_DB = Path.home() / ".xli" / "skills.db"
 
@@ -65,60 +68,93 @@ class SkillsManager:
         conn.commit()
         conn.close()
 
-    def _scan_skills(self):
-        """Scan skills directory and update index"""
+    def _skill_roots(self) -> list[Path]:
+        """Bundled skills first, then the user directory.
+
+        Later roots win, so a file in ~/.xli/skills overrides a bundled skill
+        with the same name.
+        """
+        roots = []
+        if BUNDLED_SKILLS_DIR.is_dir():
+            roots.append(BUNDLED_SKILLS_DIR)
+        if SKILLS_DIR.is_dir():
+            roots.append(SKILLS_DIR)
+        return roots
+
+    def _scan_skills(self) -> None:
+        """Index every skill under the bundled and user roots."""
         conn = sqlite3.connect(str(SKILLS_DB))
         cursor = conn.cursor()
 
         cursor.execute("SELECT name, path, modified FROM skills")
         existing = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
 
-        current_skills = set()
-        if SKILLS_DIR.exists():
-            for skill_file in SKILLS_DIR.rglob("*.md"):
-                if skill_file.name.startswith(".") or skill_file.name.startswith("_"):
+        current_skills: set[str] = set()
+        indexed = 0
+
+        for root in self._skill_roots():
+            for skill_file in root.rglob("*.md"):
+                if skill_file.name.startswith((".", "_")):
                     continue
 
-                rel_path = str(skill_file.relative_to(SKILLS_DIR))
-                name = rel_path.replace("/", "_").replace("\\", "_").replace(".md", "")
+                rel_path = str(skill_file.relative_to(root))
+                name = rel_path.replace("/", "_").replace("\\", "_").removesuffix(".md")
                 current_skills.add(name)
 
-                mtime = datetime.fromtimestamp(skill_file.stat().st_mtime)
+                # Store the mtime as text and compare text to text. The original
+                # code stored a datetime but compared against .isoformat(), so
+                # the check never matched and every run re-read every file.
+                mtime = datetime.fromtimestamp(skill_file.stat().st_mtime).isoformat()
 
                 if name in existing:
                     old_path, old_mtime = existing[name]
-                    if old_path == str(skill_file) and old_mtime == mtime.isoformat():
+                    if old_path == str(skill_file) and old_mtime == mtime:
                         continue
 
                 try:
-                    content = skill_file.read_text(encoding="utf-8")
-                    category = str(skill_file.parent.relative_to(SKILLS_DIR)) if skill_file.parent != SKILLS_DIR else "core"
+                    content = skill_file.read_text(encoding="utf-8", errors="replace")
+                    category = (
+                        str(skill_file.parent.relative_to(root))
+                        if skill_file.parent != root
+                        else "core"
+                    )
 
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         INSERT OR REPLACE INTO skills (name, path, category, content, size, modified)
                         VALUES (?, ?, ?, ?, ?, ?)
-                    """, (name, str(skill_file), category, content, len(content), mtime))
+                        """,
+                        (name, str(skill_file), category, content, len(content), mtime),
+                    )
 
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO skills_fts (name, content, category)
-                        VALUES (?, ?, ?)
-                    """, (name, content, category))
+                    # FTS4 has no REPLACE semantics — inserting over an existing
+                    # row leaves both, and search then returns duplicates.
+                    cursor.execute("DELETE FROM skills_fts WHERE name = ?", (name,))
+                    cursor.execute(
+                        "INSERT INTO skills_fts (name, content, category) VALUES (?, ?, ?)",
+                        (name, content, category),
+                    )
+                    indexed += 1
 
-                    logger.log_structured("DEBUG", "skills", f"Indexed: {name}")
+                except OSError as exc:
+                    logger.log_error("skills", f"Failed to index {skill_file}", exc=exc)
 
-                except Exception as e:
-                    logger.log_error("skills", f"Failed to index {skill_file}", exc=e)
-
+        removed = 0
         for name in existing:
             if name not in current_skills:
                 cursor.execute("DELETE FROM skills WHERE name = ?", (name,))
                 cursor.execute("DELETE FROM skills_fts WHERE name = ?", (name,))
-                logger.log_structured("DEBUG", "skills", f"Removed: {name}")
+                removed += 1
 
         conn.commit()
         conn.close()
 
-    def load_skill(self, name: str) -> Optional[str]:
+        if indexed or removed:
+            logger.log_structured(
+                "INFO", "skills", f"indexed {indexed}, removed {removed}, total {len(current_skills)}"
+            )
+
+    def load_skill(self, name: str) -> str | None:
         """Lazy load skill content by name"""
         conn = sqlite3.connect(str(SKILLS_DB))
         cursor = conn.cursor()
@@ -130,31 +166,69 @@ class SkillsManager:
             return row[0]
         return None
 
-    def search_skills(self, query: str, limit: int = 10) -> List[Tuple[str, str, float]]:
-        """Full-text search skills (FTS4 compatible, no rank)"""
+    def search_skills(self, query: str, limit: int = 10) -> list[tuple[str, str, float]]:
+        """Full-text search, ranked.
+
+        FTS4 gives no usable score on its own (`rank` is FTS5-only), and the
+        original query hardcoded `0.0`, so callers could not tell a strong
+        match from noise. FTS narrows the candidates; the actual score is a
+        term frequency over the name and body, computed here. With a few
+        hundred skills that is instantaneous.
+        """
+        terms = [t for t in re.split(r"\W+", query.lower()) if t]
+        if not terms:
+            return []
+
         conn = sqlite3.connect(str(SKILLS_DB))
         cursor = conn.cursor()
+        rows: list[tuple[str, str, str]] = []
 
+        # FTS first. The query is quoted term by term so user input can never
+        # be read as FTS syntax.
+        fts_query = " ".join(f'"{t}"' for t in terms)
         try:
-            cursor.execute("""
-                SELECT s.name, s.category, 0.0 as score
+            cursor.execute(
+                """
+                SELECT DISTINCT s.name, s.category, s.content
                 FROM skills_fts sf
-                JOIN skills s ON sf.name = s.name
+                JOIN skills s ON s.name = sf.name
                 WHERE skills_fts MATCH ?
                 LIMIT ?
-            """, (query, limit))
-            results = [(row[0], row[1], row[2]) for row in cursor.fetchall()]
+                """,
+                (fts_query, max(limit * 20, 50)),
+            )
+            rows = list(cursor.fetchall())
         except sqlite3.OperationalError:
-            cursor.execute("""
-                SELECT name, category, 0.0 as score
-                FROM skills
-                WHERE name LIKE ? OR content LIKE ?
-                LIMIT ?
-            """, (f"%{query}%", f"%{query}%", limit))
-            results = [(row[0], row[1], row[2]) for row in cursor.fetchall()]
+            rows = []
+
+        if not rows:
+            like = f"%{terms[0]}%"
+            cursor.execute(
+                "SELECT name, category, content FROM skills WHERE name LIKE ? OR content LIKE ? LIMIT ?",
+                (like, like, max(limit * 20, 50)),
+            )
+            rows = list(cursor.fetchall())
 
         conn.close()
-        logger.log_structured("DEBUG", "skills", f"Search '{query[:30]}': {len(results)} results")
+
+        scored: list[tuple[str, str, float]] = []
+        for name, category, content in rows:
+            haystack = f"{name} {category}".lower()
+            body = (content or "").lower()
+            score = 0.0
+            for term in terms:
+                # A hit in the name or category is worth much more than one in
+                # the body, which is where long skill files swamp the signal.
+                score += 5.0 * haystack.count(term)
+                score += min(body.count(term), 20) * 0.25
+            if score > 0:
+                scored.append((name, category, round(score, 3)))
+
+        scored.sort(key=lambda item: (-item[2], item[0]))
+        results = scored[:limit]
+        logger.log_structured(
+            "DEBUG", "skills", f"Search '{query[:30]}': {len(results)} results"
+        )
         return results
 
     def get_skills_context(self, agent_name: str, max_skills: int = 6) -> str:
@@ -211,7 +285,7 @@ class SkillsManager:
             logger.log_error("skills", f"Failed to add skill {path}", exc=e)
             return False
 
-    def list_skills(self) -> List[Tuple[str, str, int]]:
+    def list_skills(self) -> list[tuple[str, str, int]]:
         """List all skills with metadata"""
         conn = sqlite3.connect(str(SKILLS_DB))
         cursor = conn.cursor()

@@ -3,7 +3,6 @@
 import json
 import sys
 import subprocess
-from datetime import datetime
 
 def blame_line(file, line, repo="."):
     try:
@@ -68,7 +67,7 @@ def handle_request(request):
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":

@@ -13,11 +13,11 @@ class SimpleIndex:
         self.index = defaultdict(set)  # token -> set(file paths)
         self.file_cache = {}            # file path -> content
         self._build()
-    
+
     def _tokenize(self, text):
         """разбиваем на слова/идентификаторы"""
         return set(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]{2,}\b', text.lower()))
-    
+
     def _build(self):
         for py_file in self.root_dir.rglob("*.py"):
             if "venv" in str(py_file) or "__pycache__" in str(py_file):
@@ -28,9 +28,9 @@ class SimpleIndex:
                 tokens = self._tokenize(content)
                 for tok in tokens:
                     self.index[tok].add(str(py_file))
-            except:
+            except Exception:
                 pass
-    
+
     def search(self, query, top_n=5):
         tokens = self._tokenize(query)
         scores = defaultdict(int)

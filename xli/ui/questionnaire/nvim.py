@@ -4,7 +4,7 @@ xli/ui/questionnaire/nvim.py — Neovim Questionnaire
 Специфика Neovim: интерактивный буфер, vim.ui.input, vim.ui.select
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Any
 from dataclasses import dataclass
 
 from xli.ui.questionnaire.base import Question
@@ -19,7 +19,7 @@ class NvimQuestionnaire:
 
     nvim_ui: Any  # NvimUI instance
 
-    def run(self, questions: List[Question]) -> Dict[str, str]:
+    def run(self, questions: list[Question]) -> dict[str, str]:
         """Run questionnaire in Neovim"""
         if not self.nvim_ui or not self.nvim_ui.is_available():
             logger.warning("Neovim not available, falling back to terminal")
@@ -46,6 +46,6 @@ class NvimQuestionnaire:
         logger.info(f"Questionnaire complete: {len(answers)} answers")
         return answers
 
-    def run_async(self, questions: List[Question]) -> Dict[str, str]:
+    def run_async(self, questions: list[Question]) -> dict[str, str]:
         """Async version for use with async UI"""
         return self.run(questions)

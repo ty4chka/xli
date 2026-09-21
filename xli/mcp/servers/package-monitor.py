@@ -19,7 +19,7 @@ def list_dependencies():
         try:
             result = subprocess.run(["pip", "freeze"], capture_output=True, text=True)
             deps = result.stdout.strip().split('\n')
-        except:
+        except Exception:
             pass
     return "\n".join(deps[:20]) if deps else "Не удалось определить зависимости"
 

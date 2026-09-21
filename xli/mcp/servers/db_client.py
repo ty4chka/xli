@@ -12,55 +12,55 @@ def query_sql(connection_string, query, params=None):
     try:
         parsed = urlparse(connection_string)
         scheme = parsed.scheme
-        
+
         if scheme in ["sqlite", ""]:
             import sqlite3
             conn = sqlite3.connect(parsed.path or connection_string)
             cursor = conn.cursor()
-            
+
             # Safety: only SELECT for now
             if not query.strip().upper().startswith("SELECT"):
                 return "Error: Only SELECT queries allowed"
-            
+
             cursor.execute(query, params or [])
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
             rows = cursor.fetchall()
             conn.close()
-            
+
             result = {
                 "columns": columns,
                 "rows": [list(row) for row in rows[:100]],  # Limit results
                 "count": len(rows)
             }
             return json.dumps(result, indent=2, default=str)
-            
+
         elif scheme in ["postgresql", "postgres"]:
             try:
                 import psycopg2
                 conn = psycopg2.connect(connection_string)
                 cursor = conn.cursor()
-                
+
                 if not query.strip().upper().startswith("SELECT"):
                     return "Error: Only SELECT queries allowed"
-                
+
                 cursor.execute(query, params or [])
                 columns = [desc[0] for desc in cursor.description] if cursor.description else []
                 rows = cursor.fetchall()
                 conn.close()
-                
+
                 result = {
                     "columns": columns,
                     "rows": [list(row) for row in rows[:100]],
                     "count": len(rows)
                 }
                 return json.dumps(result, indent=2, default=str)
-                
+
             except ImportError:
                 return "psycopg2 not installed. pip install psycopg2-binary"
-        
+
         else:
             return f"Unsupported database: {scheme}"
-            
+
     except Exception as e:
         return f"Error: {e}"
 
@@ -69,16 +69,16 @@ def get_schema(connection_string, table):
     try:
         parsed = urlparse(connection_string)
         scheme = parsed.scheme
-        
+
         if scheme in ["sqlite", ""]:
             import sqlite3
             conn = sqlite3.connect(parsed.path or connection_string)
             cursor = conn.cursor()
-            
+
             cursor.execute(f"PRAGMA table_info({table})")
             columns = cursor.fetchall()
             conn.close()
-            
+
             schema = []
             for col in columns:
                 schema.append({
@@ -88,12 +88,12 @@ def get_schema(connection_string, table):
                     "default": col[4],
                     "pk": bool(col[5])
                 })
-            
+
             return json.dumps(schema, indent=2)
-            
+
         else:
             return f"Schema introspection for {scheme} not yet implemented"
-            
+
     except Exception as e:
         return f"Error: {e}"
 
@@ -102,21 +102,21 @@ def list_tables(connection_string):
     try:
         parsed = urlparse(connection_string)
         scheme = parsed.scheme
-        
+
         if scheme in ["sqlite", ""]:
             import sqlite3
             conn = sqlite3.connect(parsed.path or connection_string)
             cursor = conn.cursor()
-            
+
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [row[0] for row in cursor.fetchall()]
             conn.close()
-            
+
             return json.dumps(tables, indent=2)
-            
+
         else:
             return f"Table listing for {scheme} not yet implemented"
-            
+
     except Exception as e:
         return f"Error: {e}"
 
@@ -129,17 +129,17 @@ TOOLS = {
 def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
-    
+
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})
-        
+
         if tool in TOOLS:
             try:
                 result = TOOLS[tool](**args)
@@ -150,9 +150,9 @@ def handle_request(request):
                 }
             except Exception as e:
                 return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}
-        
+
         return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown tool: {tool}"}, "id": req_id}
-    
+
     return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}, "id": req_id}
 
 def main():

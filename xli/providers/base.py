@@ -4,7 +4,7 @@ XLI Providers Base — AbstractProvider + factory get_provider()
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, Any
+from typing import Any
 
 from xli.core.config import get_config
 from xli.core.logger import StructuredLogger
@@ -21,18 +21,18 @@ class AbstractProvider(ABC):
         self.logger = StructuredLogger(f"xli.providers.{self.__class__.__name__.lower()}")
 
     @abstractmethod
-    async def chat(self, messages: List[Dict], temperature: float = 0.4, 
+    async def chat(self, messages: list[dict], temperature: float = 0.4,
                    max_tokens: int = 4000) -> str:
         """Send chat completion request"""
         pass
 
     @abstractmethod
-    async def stream(self, messages: List[Dict], temperature: float = 0.4) -> Any:
+    async def stream(self, messages: list[dict], temperature: float = 0.4) -> Any:
         """Stream chat completion"""
         pass
 
     @abstractmethod
-    async def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         """Get embeddings"""
         pass
 

@@ -15,11 +15,11 @@ def http_request(method="GET", url="", headers=None, body=None, timeout=30):
     """Make HTTP request"""
     if not HAS_HTTPX:
         return "httpx not installed. pip install httpx"
-    
+
     try:
         method = method.upper()
         headers = headers or {}
-        
+
         with httpx.Client(timeout=timeout) as client:
             if method == "GET":
                 response = client.get(url, headers=headers)
@@ -33,16 +33,16 @@ def http_request(method="GET", url="", headers=None, body=None, timeout=30):
                 response = client.patch(url, headers=headers, json=body)
             else:
                 return f"Unsupported method: {method}"
-            
+
             result = {
                 "status_code": response.status_code,
                 "headers": dict(response.headers),
                 "body": response.text[:2000],  # Limit body size
                 "url": str(response.url)
             }
-            
+
             return json.dumps(result, indent=2)
-            
+
     except Exception as e:
         return f"Error: {e}"
 
@@ -50,16 +50,16 @@ def test_api(base_url, endpoints):
     """Test multiple API endpoints"""
     if not HAS_HTTPX:
         return "httpx not installed"
-    
+
     results = []
-    
+
     for endpoint in endpoints:
         method = endpoint.get("method", "GET")
         path = endpoint.get("path", "/")
         expected_status = endpoint.get("expected_status", 200)
-        
+
         url = base_url.rstrip("/") + "/" + path.lstrip("/")
-        
+
         try:
             with httpx.Client(timeout=10) as client:
                 if method == "GET":
@@ -68,7 +68,7 @@ def test_api(base_url, endpoints):
                     response = client.post(url, json=endpoint.get("body", {}))
                 else:
                     response = client.request(method, url)
-                
+
                 passed = response.status_code == expected_status
                 results.append({
                     "endpoint": path,
@@ -78,7 +78,7 @@ def test_api(base_url, endpoints):
                     "passed": passed,
                     "response_preview": response.text[:200]
                 })
-                
+
         except Exception as e:
             results.append({
                 "endpoint": path,
@@ -86,12 +86,12 @@ def test_api(base_url, endpoints):
                 "error": str(e),
                 "passed": False
             })
-    
+
     passed_count = sum(1 for r in results if r.get("passed"))
-    
+
     summary = f"Passed: {passed_count}/{len(results)}\n"
     summary += json.dumps(results, indent=2)
-    
+
     return summary
 
 def curl_like(url, method="GET", headers=None, data=None):
@@ -107,17 +107,17 @@ TOOLS = {
 def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
-    
+
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})
-        
+
         if tool in TOOLS:
             try:
                 result = TOOLS[tool](**args)
@@ -128,9 +128,9 @@ def handle_request(request):
                 }
             except Exception as e:
                 return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}
-        
+
         return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown tool: {tool}"}, "id": req_id}
-    
+
     return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}, "id": req_id}
 
 def main():

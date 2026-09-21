@@ -7,7 +7,7 @@ Supports 75+ providers via unified interface (like AI SDK)
 import os
 import asyncio
 import time
-from typing import List, Dict, Optional, Any
+from typing import Any
 from abc import ABC, abstractmethod
 
 from xli.core.logger import StructuredLogger
@@ -36,12 +36,12 @@ class BaseProvider(ABC):
         self.request_count += 1
 
     @abstractmethod
-    async def chat(self, messages: List[Dict], temperature: float = 0.4,
+    async def chat(self, messages: list[dict], temperature: float = 0.4,
                    max_tokens: int = 4000) -> str:
         pass
 
     @abstractmethod
-    async def stream(self, messages: List[Dict], temperature: float = 0.4) -> Any:
+    async def stream(self, messages: list[dict], temperature: float = 0.4) -> Any:
         pass
 
 
@@ -67,7 +67,7 @@ class OpenAIProvider(BaseProvider):
                 ) as resp:
                     data = await resp.json()
                     return data["choices"][0]["message"]["content"]
-        except:
+        except Exception:
             import requests
             resp = requests.post(f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
@@ -109,7 +109,7 @@ class AnthropicProvider(BaseProvider):
                 ) as resp:
                     data = await resp.json()
                     return data["content"][0]["text"]
-        except:
+        except Exception:
             import requests
             resp = requests.post(f"{self.base_url}/messages",
                 headers={"x-api-key": self.api_key, "Content-Type": "application/json", "anthropic-version": "2023-06-01"},
@@ -147,7 +147,7 @@ class GeminiProvider(BaseProvider):
                 ) as resp:
                     data = await resp.json()
                     return data["candidates"][0]["content"]["parts"][0]["text"]
-        except:
+        except Exception:
             import requests
             resp = requests.post(f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}",
                 json={"contents": contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}})
@@ -171,14 +171,13 @@ class OllamaProvider(BaseProvider):
         await self._rate_limit()
         try:
             import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.base_url}/api/chat",
-                    json={"model": self.model, "messages": messages, "stream": False}
-                ) as resp:
-                    data = await resp.json()
-                    return data["message"]["content"]
-        except:
+            async with aiohttp.ClientSession() as session, session.post(
+                f"{self.base_url}/api/chat",
+                json={"model": self.model, "messages": messages, "stream": False}
+            ) as resp:
+                data = await resp.json()
+                return data["message"]["content"]
+        except Exception:
             import requests
             resp = requests.post(f"{self.base_url}/api/chat",
                 json={"model": self.model, "messages": messages, "stream": False})
@@ -210,7 +209,7 @@ class OpenRouterProvider(BaseProvider):
                 ) as resp:
                     data = await resp.json()
                     return data["choices"][0]["message"]["content"]
-        except:
+        except Exception:
             import requests
             resp = requests.post(f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
@@ -274,7 +273,7 @@ def create_provider(name: str, model: str = None, **kwargs) -> BaseProvider:
         raise ValueError(f"Unknown provider: {name}")
 
 
-def list_providers() -> List[str]:
+def list_providers() -> list[str]:
     """List available providers"""
     return list(PROVIDERS.keys())
 

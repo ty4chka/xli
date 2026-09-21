@@ -48,12 +48,12 @@ def grep(path, pattern, recursive=False):
     try:
         p = Path(path)
         matches = []
-        
+
         if recursive:
             files = p.rglob("*")
         else:
             files = p.iterdir()
-        
+
         for file in files:
             if file.is_file():
                 try:
@@ -61,9 +61,9 @@ def grep(path, pattern, recursive=False):
                     for i, line in enumerate(content.splitlines(), 1):
                         if pattern in line:
                             matches.append(f"{file}:{i}:{line[:100]}")
-                except:
+                except Exception:
                     pass
-        
+
         return "\n".join(matches[:50]) or "No matches"
     except Exception as e:
         return f"Error: {e}"
@@ -72,14 +72,14 @@ def find(root, name_pattern="*", type="any"):
     try:
         p = Path(root)
         matches = []
-        
+
         for item in p.rglob(name_pattern):
             if type == "file" and not item.is_file():
                 continue
             if type == "dir" and not item.is_dir():
                 continue
             matches.append(str(item))
-        
+
         return "\n".join(matches[:100])
     except Exception as e:
         return f"Error: {e}"
@@ -96,17 +96,17 @@ TOOLS = {
 def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
-    
+
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})
-        
+
         if tool in TOOLS:
             try:
                 result = TOOLS[tool](**args)
@@ -117,9 +117,9 @@ def handle_request(request):
                 }
             except Exception as e:
                 return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}
-        
+
         return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown tool: {tool}"}, "id": req_id}
-    
+
     return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}, "id": req_id}
 
 def main():

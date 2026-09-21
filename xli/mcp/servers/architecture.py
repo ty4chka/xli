@@ -2,7 +2,6 @@
 # mcp-architecture-cli.py — анализ зависимостей и циклов
 import json
 import sys
-import subprocess
 from pathlib import Path
 
 def dependency_graph(directory="."):
@@ -23,7 +22,7 @@ def dependency_graph(directory="."):
                         parts = line.split()
                         if len(parts) >= 2:
                             deps.append(parts[1])
-        except:
+        except Exception:
             pass
         if deps:
             imports[name] = deps
@@ -48,7 +47,7 @@ def circular_dependencies(directory="."):
                         parts = line.split()
                         if len(parts) >= 2:
                             deps.append(parts[1])
-        except:
+        except Exception:
             pass
         imports[name] = deps
 
@@ -86,7 +85,7 @@ def handle_request(request):
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":

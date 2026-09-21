@@ -14,7 +14,7 @@ LayerStore (see layers.py) as a layer_id, not duplicated here.
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 from xli.core.logger import StructuredLogger
 
@@ -48,10 +48,10 @@ class Attempt:
 @dataclass
 class Goal:
     description: str
-    criteria: List[Criterion]
+    criteria: list[Criterion]
     max_iterations: int = 5
     status: GoalStatus = GoalStatus.PENDING
-    attempts: List[Attempt] = field(default_factory=list)
+    attempts: list[Attempt] = field(default_factory=list)
 
     def evaluate(self) -> bool:
         """Run every criterion's checker. Returns True iff all pass."""

@@ -7,8 +7,8 @@ Agents coordinate through team_inbox/<project>/<team>/<agent>.jsonl
 import json
 import asyncio
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
+from typing import Any
+from dataclasses import dataclass
 from datetime import datetime
 
 from xli.core.logger import StructuredLogger
@@ -47,8 +47,8 @@ class TeamInbox:
         self.team = team
         self.base_dir = Path.home() / ".xli" / "team_inbox" / project / team
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self._callbacks: Dict[str, List[callable]] = {}
-        self._watches: Dict[str, asyncio.Task] = {}
+        self._callbacks: dict[str, list[callable]] = {}
+        self._watches: dict[str, asyncio.Task] = {}
 
     def _get_inbox_path(self, agent: str) -> Path:
         """Get inbox file for agent"""
@@ -71,7 +71,7 @@ class TeamInbox:
         with open(inbox_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(msg.to_dict(), ensure_ascii=False) + "\n")
 
-        logger.log_structured("INFO", "inbox", 
+        logger.log_structured("INFO", "inbox",
                              f"Message from {from_agent} to {to_agent}",
                              {"text": text[:100]})
 
@@ -85,7 +85,7 @@ class TeamInbox:
 
         return msg
 
-    async def broadcast(self, from_agent: str, text: str, exclude: List[str] = None):
+    async def broadcast(self, from_agent: str, text: str, exclude: list[str] = None):
         """Broadcast message to all agents"""
         exclude = exclude or []
 
@@ -100,7 +100,7 @@ class TeamInbox:
         for agent in agents:
             await self.send(from_agent, agent, text)
 
-    def read_messages(self, agent: str, since: str = None, limit: int = 50) -> List[InboxMessage]:
+    def read_messages(self, agent: str, since: str = None, limit: int = 50) -> list[InboxMessage]:
         """Read messages for agent"""
         inbox_path = self._get_inbox_path(agent)
         if not inbox_path.exists():
@@ -108,7 +108,7 @@ class TeamInbox:
 
         messages = []
         try:
-            with open(inbox_path, "r", encoding="utf-8") as f:
+            with open(inbox_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -118,9 +118,9 @@ class TeamInbox:
                         if since and data.get("timestamp", "") < since:
                             continue
                         messages.append(InboxMessage(**data))
-                    except:
+                    except Exception:
                         pass
-        except:
+        except Exception:
             pass
 
         return messages[-limit:]
@@ -162,8 +162,8 @@ class AgentCoordinator:
 
     def __init__(self, inbox: TeamInbox = None):
         self.inbox = inbox or TeamInbox()
-        self.agents: Dict[str, Any] = {}
-        self.active_sessions: Dict[str, bool] = {}
+        self.agents: dict[str, Any] = {}
+        self.active_sessions: dict[str, bool] = {}
 
     def register_agent(self, agent_id: str, agent_instance: Any):
         """Register agent for coordination"""
@@ -227,7 +227,7 @@ class AgentCoordinator:
 
             await asyncio.sleep(1)
 
-    def get_team_status(self) -> Dict[str, Any]:
+    def get_team_status(self) -> dict[str, Any]:
         """Get status of all agents"""
         return {
             agent_id: {

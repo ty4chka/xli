@@ -20,7 +20,7 @@ def analyze_complexity(directory, threshold=10):
                     complexity = sum(1 for _ in ast.walk(node))
                     if complexity > threshold:
                         results.append(f"{py_file}:{node.lineno} {node.name} (complexity approx {complexity})")
-        except:
+        except Exception:
             pass
     return "\n".join(results[:20]) or "Сложных функций не найдено"
 
@@ -55,7 +55,7 @@ def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "result": {"tools": [{"name": n} for n in TOOLS.keys()]}, "id": req_id}
+        return {"jsonrpc": "2.0", "result": {"tools": [{"name": n} for n in TOOLS]}, "id": req_id}
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})

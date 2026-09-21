@@ -6,7 +6,6 @@ MCP Code Formatter — black, ruff, mypy, isort
 import json
 import sys
 import subprocess
-from pathlib import Path
 
 def format_black(code, line_length=100):
     try:
@@ -32,20 +31,20 @@ def lint_ruff(code, select="E,W,F,I"):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             temp_path = f.name
-        
+
         result = subprocess.run(
             ["ruff", "check", temp_path, "--select", select],
             capture_output=True,
             text=True,
             timeout=30
         )
-        
+
         os.unlink(temp_path)
-        
+
         if result.returncode == 0:
             return "✅ No issues found"
         return f"Ruff issues:\n{result.stdout or result.stderr}"
-        
+
     except FileNotFoundError:
         return "ruff not installed. pip install ruff"
     except Exception as e:
@@ -58,22 +57,22 @@ def type_check_mypy(code, strict=False):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             temp_path = f.name
-        
+
         args = ["mypy", temp_path]
         if strict:
             args.append("--strict")
-        
+
         result = subprocess.run(
             args,
             capture_output=True,
             text=True,
             timeout=30
         )
-        
+
         os.unlink(temp_path)
-        
+
         return result.stdout or result.stderr or "✅ Type check passed"
-        
+
     except FileNotFoundError:
         return "mypy not installed. pip install mypy"
     except Exception as e:
@@ -106,17 +105,17 @@ TOOLS = {
 def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
-    
+
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": [{"name": n} for n in TOOLS]},
             "id": req_id
         }
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})
-        
+
         if tool in TOOLS:
             try:
                 result = TOOLS[tool](**args)
@@ -127,9 +126,9 @@ def handle_request(request):
                 }
             except Exception as e:
                 return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}
-        
+
         return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown tool: {tool}"}, "id": req_id}
-    
+
     return {"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Unknown method: {method}"}, "id": req_id}
 
 def main():

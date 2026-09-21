@@ -35,11 +35,10 @@ import hashlib
 import json
 import os
 import time
-import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from xli.core.logger import StructuredLogger
 
@@ -65,14 +64,14 @@ class LayerMeta:
     """The cheap part — what actually lives in the index and gets kept around
     in an agent's working context. No full content here on purpose."""
     layer_id: str
-    parent_id: Optional[str]
+    parent_id: str | None
     kind: str            # "plan" | "code" | "test_result" | "fix" | "note" | ...
     agent: str            # which agent/role produced this layer
     note: str             # short human/LLM-written summary
     content_hash: str     # sha256 of the full content, for self-verification
     content_path: str     # where the full content lives on disk
     created_at: float
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     # Real project file paths this layer actually wrote, mapped to the exact
     # content written at commit time (absolute paths). Optional and empty by
     # default so old index.json files without this field still load fine —
@@ -80,9 +79,9 @@ class LayerMeta:
     # without it a layer only has the raw agent-response text, which isn't
     # necessarily the same string as what ended up on disk (tool-call
     # envelopes, edits applied on top of existing content, etc).
-    file_writes: List[Dict[str, str]] = field(default_factory=list)
+    file_writes: list[dict[str, str]] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -104,8 +103,8 @@ class LayerStore:
         self.refs_path = self.root / "refs.json"
         self._lock_path = self.root / ".lock"
         self._lock_path.touch(exist_ok=True)
-        self._index: Dict[str, LayerMeta] = self._load_index()
-        self._refs: Dict[str, str] = self._load_refs()
+        self._index: dict[str, LayerMeta] = self._load_index()
+        self._refs: dict[str, str] = self._load_refs()
 
     # ---- locking --------------------------------------------------------
 
@@ -151,7 +150,7 @@ class LayerStore:
 
     # ---- persistence -----------------------------------------------------
 
-    def _load_index(self) -> Dict[str, LayerMeta]:
+    def _load_index(self) -> dict[str, LayerMeta]:
         if not self.index_path.exists():
             return {}
         try:
@@ -165,7 +164,7 @@ class LayerStore:
         payload = {k: v.to_dict() for k, v in self._index.items()}
         self.index_path.write_text(json.dumps(payload, indent=2))
 
-    def _load_refs(self) -> Dict[str, str]:
+    def _load_refs(self) -> dict[str, str]:
         if not self.refs_path.exists():
             return {}
         try:
@@ -184,10 +183,10 @@ class LayerStore:
         note: str,
         kind: str,
         agent: str,
-        parent_id: Optional[str] = None,
-        tags: Optional[List[str]] = None,
+        parent_id: str | None = None,
+        tags: list[str] | None = None,
         move_head: bool = True,
-        file_writes: Optional[Dict[str, str]] = None,
+        file_writes: dict[str, str] | None = None,
     ) -> str:
         """Write a new layer. Returns the layer_id.
 
@@ -206,7 +205,7 @@ class LayerStore:
         content_path = self.objects_dir / f"{layer_id}.txt"
         content_path.write_text(content)
 
-        writes_record: List[Dict[str, str]] = []
+        writes_record: list[dict[str, str]] = []
         if file_writes:
             for path, file_content in file_writes.items():
                 obj_path = self.objects_dir / f"{layer_id}__{_hash(path)[:10]}.filewrite"
@@ -241,7 +240,7 @@ class LayerStore:
         logger.log_structured("INFO", "layers", f"Committed {kind} layer {layer_id}", {"note": note[:80]})
         return layer_id
 
-    def attach_file_writes(self, layer_id: str, file_writes: Dict[str, str]):
+    def attach_file_writes(self, layer_id: str, file_writes: dict[str, str]):
         """Record real project file writes against an *already-committed*
         layer. Needed because tool calls (write/edit) are currently parsed
         and executed by the caller (chain.py's _process_tools) as a
@@ -269,11 +268,11 @@ class LayerStore:
             meta.file_writes = list(existing.values())
             self._save_index()
 
-    def get_note(self, layer_id: str) -> Optional[LayerMeta]:
+    def get_note(self, layer_id: str) -> LayerMeta | None:
         """Cheap lookup — no disk read of the full content."""
         return self._index.get(layer_id)
 
-    def get_full(self, layer_id: str) -> Dict[str, Any]:
+    def get_full(self, layer_id: str) -> dict[str, Any]:
         """Read the full content, verifying it against the hash recorded at
         commit time. Always returns the content (self-verification informs,
         it doesn't block) but flags `verified: False` if the file drifted.
@@ -332,7 +331,7 @@ class LayerStore:
 
     # ---- history / navigation ----------------------------------------------
 
-    def history(self, from_id: Optional[str] = None, limit: int = 50) -> List[LayerMeta]:
+    def history(self, from_id: str | None = None, limit: int = 50) -> list[LayerMeta]:
         """Walk parent links from `from_id` (default HEAD) back through history.
         Returns notes only — cheap, meant to be handed to an LLM as context."""
         start = from_id or self._refs.get("HEAD")
@@ -351,9 +350,9 @@ class LayerStore:
     def checkout(
         self,
         layer_id: str,
-        dest_root: Optional[str] = None,
+        dest_root: str | None = None,
         dry_run: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Restore real project files to their state as of `layer_id`.
 
         Walks parent links from `layer_id` back to the root, collecting
@@ -381,8 +380,8 @@ class LayerStore:
 
         # path -> (content, hash, source_layer_id), last writer along the
         # chain wins, same as replaying git commits in order.
-        resolved: Dict[str, Dict[str, str]] = {}
-        empty_layers: List[str] = []
+        resolved: dict[str, dict[str, str]] = {}
+        empty_layers: list[str] = []
         for meta in chain:
             if not meta.file_writes:
                 empty_layers.append(meta.layer_id)
@@ -394,8 +393,8 @@ class LayerStore:
                     "source_layer": meta.layer_id,
                 }
 
-        restored: List[str] = []
-        verified_mismatches: List[str] = []
+        restored: list[str] = []
+        verified_mismatches: list[str] = []
         for path, info in resolved.items():
             obj_path = Path(info["object_path"])
             if not obj_path.exists():
@@ -453,25 +452,25 @@ class LayerStore:
                 meta.tags.append(tag)
                 self._save_index()
 
-    def find_by_tag(self, tag: str, kind: Optional[str] = None) -> List[LayerMeta]:
+    def find_by_tag(self, tag: str, kind: str | None = None) -> list[LayerMeta]:
         """All layers carrying a given tag, newest first. Used by the
         reconciler to find e.g. every 'passed' test_result without re-reading
         full content or parsing notes."""
         results = [m for m in self._index.values() if tag in m.tags and (kind is None or m.kind == kind)]
         return sorted(results, key=lambda m: m.created_at, reverse=True)
 
-    def all_layers(self) -> List[LayerMeta]:
+    def all_layers(self) -> list[LayerMeta]:
         return list(self._index.values())
 
-    def get_ref(self, name: str) -> Optional[str]:
+    def get_ref(self, name: str) -> str | None:
         return self._refs.get(name)
 
-    def list_refs(self) -> Dict[str, str]:
+    def list_refs(self) -> dict[str, str]:
         """All named refs (HEAD, last_good, ...) -> layer_id. Public so
         callers like Reconciler don't need to reach into self._refs."""
         return dict(self._refs)
 
-    def context_window(self, from_id: Optional[str] = None, limit: int = 10) -> str:
+    def context_window(self, from_id: str | None = None, limit: int = 10) -> str:
         """Render recent history as compact notes — this is what you actually
         hand to an LLM, not the full content. Newest first."""
         lines = []
@@ -480,7 +479,7 @@ class LayerStore:
         return "\n".join(lines) if lines else "(no history yet)"
 
 
-_default_store: Optional[LayerStore] = None
+_default_store: LayerStore | None = None
 
 
 def get_layer_store(root: str = "~/.xli/layers/default") -> LayerStore:

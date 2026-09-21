@@ -6,7 +6,7 @@ XLI Mistral Provider v4.2 — RESILIENT: skip on 429, don't kill step
 import os
 import asyncio
 import time
-from typing import List, Dict, Optional, Any
+from typing import Any
 
 from xli.providers.base import AbstractProvider
 from xli.core.logger import StructuredLogger
@@ -41,7 +41,7 @@ class MistralProvider(AbstractProvider):
         self.last_request_time = time.time()
         self.total_requests += 1
 
-    async def chat(self, messages: List[Dict], temperature: float = 0.4,
+    async def chat(self, messages: list[dict], temperature: float = 0.4,
                    max_tokens: int = 4000) -> str:
         """Chat with smart fallback on 429"""
         await self._rate_limit()
@@ -73,7 +73,7 @@ class MistralProvider(AbstractProvider):
                 else:
                     return f"[ERROR: {str(e)}]"
 
-    async def _chat_once(self, messages: List[Dict], temperature: float = 0.4,
+    async def _chat_once(self, messages: list[dict], temperature: float = 0.4,
                          max_tokens: int = 4000) -> str:
         """Single chat attempt"""
         try:
@@ -88,20 +88,19 @@ class MistralProvider(AbstractProvider):
                 "temperature": temperature,
                 "max_tokens": max_tokens
             }
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers, json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120)
-                ) as resp:
-                    if resp.status == 429:
-                        text = await resp.text()
-                        raise RuntimeError(f"Mistral API 429: {text[:200]}")
-                    if resp.status != 200:
-                        text = await resp.text()
-                        raise RuntimeError(f"Mistral API error {resp.status}: {text[:200]}")
-                    data = await resp.json()
-                    return data["choices"][0]["message"]["content"]
+            async with aiohttp.ClientSession() as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers, json=payload,
+                timeout=aiohttp.ClientTimeout(total=120)
+            ) as resp:
+                if resp.status == 429:
+                    text = await resp.text()
+                    raise RuntimeError(f"Mistral API 429: {text[:200]}")
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Mistral API error {resp.status}: {text[:200]}")
+                data = await resp.json()
+                return data["choices"][0]["message"]["content"]
         except ImportError:
             import requests
             headers = {
@@ -124,10 +123,10 @@ class MistralProvider(AbstractProvider):
                 raise RuntimeError(f"Mistral API error {resp.status_code}")
             return resp.json()["choices"][0]["message"]["content"]
 
-    async def stream(self, messages: List[Dict], temperature: float = 0.4) -> Any:
+    async def stream(self, messages: list[dict], temperature: float = 0.4) -> Any:
         return await self.chat(messages, temperature)
 
-    async def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         try:
             import aiohttp
             headers = {
@@ -135,13 +134,12 @@ class MistralProvider(AbstractProvider):
                 "Content-Type": "application/json"
             }
             payload = {"model": "mistral-embed", "input": text}
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.base_url}/embeddings",
-                    headers=headers, json=payload
-                ) as resp:
-                    data = await resp.json()
-                    return data["data"][0]["embedding"]
+            async with aiohttp.ClientSession() as session, session.post(
+                f"{self.base_url}/embeddings",
+                headers=headers, json=payload
+            ) as resp:
+                data = await resp.json()
+                return data["data"][0]["embedding"]
         except Exception as e:
             logger.log_error("mistral", "Embed failed", exc=e)
             return []

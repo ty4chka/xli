@@ -6,7 +6,7 @@ XLI Config v5 - with provider selection and mode settings
 import os
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any
 
 from xli.core.logger import StructuredLogger
 
@@ -43,7 +43,7 @@ class Config:
         """Load config from file"""
         if self.config_file.exists():
             try:
-                with open(self.config_file, "r") as f:
+                with open(self.config_file) as f:
                     loaded = json.load(f)
                     self._config.update(loaded)
             except Exception as e:
@@ -52,7 +52,7 @@ class Config:
         # Load env
         if self.env_file.exists():
             try:
-                with open(self.env_file, "r") as f:
+                with open(self.env_file) as f:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith('#') and '=' in line:
@@ -91,7 +91,7 @@ class Config:
     def get_mode(self) -> str:
         return self.get("mode", "headless")
 
-    def get_api_key(self, provider: str) -> Optional[str]:
+    def get_api_key(self, provider: str) -> str | None:
         """Get API key for provider"""
         key_map = {
             "mistral": "MISTRAL_API_KEY",
