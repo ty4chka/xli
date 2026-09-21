@@ -381,7 +381,7 @@ def _schedule(coro) -> None:
 
 def _version() -> str:
     try:
-        from xli.cli import VERSION
+        from xli import VERSION
 
         return VERSION
     except ImportError:  # pragma: no cover - cli always present in practice

@@ -206,8 +206,9 @@ class Repl:
 
 
 def run_repl(config, *, registry=None, policy=None, args: argparse.Namespace | None = None) -> int:
-    from xli.repl import Repl  # local import keeps module import cheap
-
+    # Repl is defined in this same module, so it is already in scope. The local
+    # import that used to be here re-imported xli.repl from inside xli.repl and
+    # showed up as a self-cycle in the dependency graph.
     repl = Repl(config, registry=registry, policy=policy)
     initial = " ".join(getattr(args, "task", []) or []) if args else ""
     return repl.loop(initial)

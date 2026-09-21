@@ -9,6 +9,15 @@ from collections import defaultdict, deque
 
 from xli.core.logger import StructuredLogger
 
+#: Directory names that hold generated or third-party code. Without build/ and
+#: dist/ in here, a package that has been built once gets scanned twice — the
+#: stale copy under build/lib/ doubled the graph and reported phantom modules.
+_IGNORED_PARTS = frozenset({
+    "venv", ".venv", "env", "__pycache__", ".git", "node_modules",
+    "build", "dist", "out", "target", ".tox", ".nox", "site-packages",
+    ".mypy_cache", ".ruff_cache", ".pytest_cache", "egg-info",
+})
+
 logger = StructuredLogger("xli.deps")
 
 
@@ -25,7 +34,7 @@ class DependencyGraph:
     def _build(self):
         """Build import graph"""
         for py_file in self.directory.rglob("*.py"):
-            if any(x in str(py_file) for x in ["venv", "__pycache__", ".git", "node_modules"]):
+            if any(part in _IGNORED_PARTS for part in py_file.parts):
                 continue
 
             module_name = self._get_module_name(py_file)
@@ -40,9 +49,8 @@ class DependencyGraph:
                         for alias in node.names:
                             self.graph[module_name].add(alias.name)
 
-                    elif isinstance(node, ast.ImportFrom):
-                        if node.module:
-                            self.graph[module_name].add(node.module)
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        self.graph[module_name].add(node.module)
 
             except Exception as e:
                 logger.log_error("deps", f"Parse failed: {py_file}", exc=e)
@@ -91,34 +99,46 @@ class DependencyGraph:
         return order
 
     def detect_cycles(self) -> list[tuple[str, str]]:
-        """Find circular dependencies"""
-        cycles = []
-        visited = set()
-        rec_stack = set()
+        """Find circular dependencies, as (module, module) edges.
 
-        def dfs(node, path):
+        The previous version kept the recursion stack in a set that was only
+        popped on the normal return path. Returning early on a found cycle left
+        stale entries behind, so a later top-level traversal could see a
+        neighbour "on the stack" that was not in its own path — and
+        `path.index(neighbour)` then raised ValueError. Reproducible on this
+        repository. The set is now maintained in a finally block, so it can
+        never disagree with `path`.
+        """
+        cycles: list[tuple[str, str]] = []
+        visited: set[str] = set()
+        on_path: set[str] = set()
+
+        def dfs(node: str, path: list[str]) -> list[str] | None:
             visited.add(node)
-            rec_stack.add(node)
+            on_path.add(node)
+            try:
+                for neighbor in sorted(self.graph.get(node, ())):
+                    if neighbor in on_path:
+                        # neighbour is on the current path: a genuine cycle
+                        start = path.index(neighbor)
+                        return path[start:] + [neighbor]
+                    if neighbor not in visited:
+                        found = dfs(neighbor, path + [neighbor])
+                        if found:
+                            return found
+                return None
+            finally:
+                on_path.discard(node)
 
-            for neighbor in self.graph.get(node, []):
-                if neighbor not in visited:
-                    result = dfs(neighbor, path + [neighbor])
-                    if result:
-                        return result
-                elif neighbor in rec_stack:
-                    # Found cycle
-                    cycle_start = path.index(neighbor)
-                    return path[cycle_start:] + [neighbor]
-
-            rec_stack.remove(node)
-            return None
-
-        for module in self.graph:
-            if module not in visited:
-                cycle = dfs(module, [module])
-                if cycle:
-                    for i in range(len(cycle) - 1):
-                        cycles.append((cycle[i], cycle[i + 1]))
+        for module in sorted(self.graph):
+            if module in visited:
+                continue
+            cycle = dfs(module, [module])
+            if cycle:
+                for i in range(len(cycle) - 1):
+                    edge = (cycle[i], cycle[i + 1])
+                    if edge not in cycles:
+                        cycles.append(edge)
 
         logger.log_structured("INFO", "deps",
                              f"Found {len(cycles)} cycle edges")

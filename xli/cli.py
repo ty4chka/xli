@@ -34,12 +34,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from xli import VERSION  # re-exported: `xli --version` reads it
+
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_ENVIRONMENT = 3
 
-VERSION = "6.0.0"
 
 
 # --------------------------------------------------------------------- output
