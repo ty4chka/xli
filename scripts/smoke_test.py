@@ -50,7 +50,7 @@ def section(title):
 # SECTION 1: Core Imports
 section("1. CORE IMPORTS")
 
-test("Import config", lambda: __import__("xli.core.config") is not None)
+test("Import config", lambda: __import__("xli.manager.config") is not None)
 test("Import logger", lambda: __import__("xli.core.logger") is not None)
 test("Import env", lambda: __import__("xli.core.env") is not None)
 test("Import skills", lambda: __import__("xli.core.skills") is not None)
@@ -67,10 +67,56 @@ def test_provider_imports():
 test("Provider imports", test_provider_imports)
 
 def test_mistral_resilience():
+    """A 429 is retried, and a persistent one raises instead of faking a reply.
+
+    This used to grep the provider source for the literal "[ERROR:" — it was
+    asserting the defect, namely that an outage was returned to the agent as if
+    it were the model's answer. It now drives the real retry path through a
+    mock transport, with no network involved.
+    """
+    import asyncio
+
+    import httpx
+
+    from xli.providers._http import ProviderError
     from xli.providers.mistral import MistralProvider
-    import inspect
-    source = inspect.getsource(MistralProvider.chat)
-    return "[ERROR:" in source and "max_retries" in source
+
+    calls = {"n": 0}
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(429, text="slow down")
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "recovered"}}]}
+        )
+
+    provider = MistralProvider(
+        api_key="test",
+        min_delay=0,
+        max_retries=3,
+        sleeper=lambda d: asyncio.sleep(0),
+        transport=httpx.MockTransport(flaky),
+    )
+    recovered = asyncio.run(provider.chat([{"role": "user", "content": "hi"}]))
+    if recovered != "recovered" or calls["n"] != 3:
+        return False
+
+    def always_429(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="slow down")
+
+    doomed = MistralProvider(
+        api_key="test",
+        min_delay=0,
+        max_retries=2,
+        sleeper=lambda d: asyncio.sleep(0),
+        transport=httpx.MockTransport(always_429),
+    )
+    try:
+        asyncio.run(doomed.chat([{"role": "user", "content": "hi"}]))
+    except ProviderError as exc:
+        return exc.status == 429
+    return False  # must raise, never return an error string as content
 
 test("Mistral 429 resilience", test_mistral_resilience)
 

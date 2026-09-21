@@ -272,6 +272,53 @@ class Config:
         return {k: v for k, v in self.data.items() if DEFAULTS.get(k, object()) != v}
 
     # ------------------------------------------------------------- convenience
+    # ------------------------------------------------------ typed accessors
+    #: Provider name -> the environment variable holding its API key. The
+    #: aliases exist because "claude" and "google" are how people refer to
+    #: Anthropic and Gemini, and `XLI_PROVIDER=claude` should just work.
+    API_KEY_VARS = {
+        "mistral": "MISTRAL_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "claude": "ANTHROPIC_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "google": "GEMINI_API_KEY",
+    }
+
+    def api_key(self, provider: str | None = None) -> str | None:
+        """The API key for a provider, or None if it is not in the environment."""
+        name = (provider or self.default_provider()).lower()
+        env_var = self.API_KEY_VARS.get(name, f"{name.upper()}_API_KEY")
+        return os.environ.get(env_var)
+
+    def default_provider(self) -> str:
+        return str(self.get("provider", "mistral"))
+
+    def model(self) -> str:
+        return str(self.get("provider.model", "mistral-large-latest"))
+
+    def temperature(self) -> float:
+        return float(self.get("provider.temperature", 0.4))
+
+    def max_tokens(self) -> int:
+        return int(self.get("provider.max_tokens", 4000))
+
+    def team(self) -> str:
+        return str(self.get("agent.team", "default"))
+
+    def project(self) -> str:
+        return str(self.get("agent.project", "default"))
+
+    def sandbox_timeout(self) -> int:
+        return int(self.get("sandbox.timeout", 10))
+
+    def sandbox_max_memory_mb(self) -> int:
+        return int(self.get("sandbox.max_memory_mb", 256))
+
+    def sandbox_network_disabled(self) -> bool:
+        return bool(self.get("sandbox.disable_network", True))
+
     def permission_mode(self) -> str:
         return str(self.get("permissions.mode", "confirm"))
 

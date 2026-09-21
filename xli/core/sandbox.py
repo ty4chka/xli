@@ -12,7 +12,7 @@ import os
 from typing import Any, Optional
 
 from xli.core.logger import StructuredLogger
-from xli.core.config import get_config
+from xli.manager.config import get_config
 
 logger = StructuredLogger("xli.sandbox")
 
@@ -31,9 +31,9 @@ class CodeSandbox:
 
     def __init__(self):
         self.config = get_config()
-        self.timeout = self.config.get_sandbox_timeout()
-        self.max_memory = self.config.get_sandbox_max_memory() * 1024 * 1024  # MB to bytes
-        self.disable_network = self.config.is_network_disabled()
+        self.timeout = self.config.sandbox_timeout()
+        self.max_memory = self.config.sandbox_max_memory_mb() * 1024 * 1024  # MB to bytes
+        self.disable_network = self.config.sandbox_network_disabled()
         logger.log_structured("INFO", "sandbox", "Sandbox initialized", {
             "timeout": self.timeout,
             "max_memory_mb": self.max_memory // (1024 * 1024)

@@ -1,20 +1,46 @@
 #!/usr/bin/env python3
-"""OpenAI Provider — placeholder fallback"""
-from xli.providers.base import AbstractProvider
+"""
+OpenAI provider.
+
+Was a stub that raised NotImplementedError on every method while still being
+selectable through the config, so `XLI_PROVIDER=openai` failed deep inside the
+agent loop instead of at startup. It is now a real client: OpenAI is the
+reference implementation of the chat-completions shape that
+`xli.providers._http` speaks.
+"""
+
+from __future__ import annotations
+
+import os
+
 from xli.core.logger import StructuredLogger
+from xli.providers._http import OpenAICompatibleProvider
+from xli.providers.base import AbstractProvider
 
 logger = StructuredLogger("xli.providers.openai")
 
-class OpenAIProvider(AbstractProvider):
-    def __init__(self, api_key: str = None, model: str = "gpt-4"):
-        super().__init__(api_key=api_key, model=model)
-        self.api_key = api_key
 
-    async def chat(self, messages, temperature=0.4, max_tokens=4000):
-        raise NotImplementedError("OpenAI provider not yet implemented")
+class OpenAIProvider(OpenAICompatibleProvider, AbstractProvider):
+    """OpenAI chat completions."""
 
-    async def stream(self, messages, temperature=0.4):
-        raise NotImplementedError("OpenAI streaming not yet implemented")
+    base_url = "https://api.openai.com/v1"
+    default_model = "gpt-4o-mini"
 
-    async def embed(self, text):
-        raise NotImplementedError("OpenAI embed not yet implemented")
+    def __init__(self, api_key: str | None = None, model: str | None = None, **kwargs):
+        api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        AbstractProvider.__init__(self, api_key=api_key, model=model)
+        OpenAICompatibleProvider.__init__(self, api_key=api_key, model=model, **kwargs)
+
+    @classmethod
+    def key_env_var(cls) -> str:
+        return "OPENAI_API_KEY"
+
+    async def embed(self, text: str) -> list[float]:
+        try:
+            data = await self._post(
+                "/embeddings", {"model": "text-embedding-3-small", "input": [text]}
+            )
+            return list(data["data"][0]["embedding"])
+        except Exception as exc:  # noqa: BLE001 - embeddings are optional
+            logger.log_error("openai", "embed failed", exc=exc)
+            return []
