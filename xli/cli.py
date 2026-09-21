@@ -506,6 +506,120 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_ENVIRONMENT if blocking else EXIT_OK
 
 
+def cmd_scout(args: argparse.Namespace) -> int:
+    """Scan the project and report (or write) AGENTS.md."""
+    from xli.core.context_scout import ContextScout
+
+    root = Path(args.path).resolve() if args.path else Path.cwd()
+    if not root.is_dir():
+        print(STYLE.red(f"no such directory: {root}"), file=sys.stderr)
+        return EXIT_USAGE
+
+    scout = ContextScout(str(root))
+
+    if args.save:
+        written = scout.save_agents_md()
+        if args.json:
+            _emit({"saved": True, "path": str(written)}, True)
+        else:
+            print(STYLE.green(f"wrote {written}"))
+        return EXIT_OK
+
+    ctx = scout.scan()
+    if args.json:
+        from dataclasses import asdict
+
+        _emit(
+            {
+                "name": ctx.name,
+                "language": ctx.language,
+                "framework": ctx.framework,
+                "key_files": ctx.key_files,
+                "dependencies": ctx.dependencies,
+                "conventions": ctx.conventions,
+                "patterns": [asdict(pat) for pat in ctx.patterns],
+            },
+            True,
+        )
+        return EXIT_OK
+
+    print(STYLE.bold(ctx.name))
+    print(f"  language    {ctx.language}")
+    print(f"  framework   {ctx.framework}")
+    print(f"  key files   {len(ctx.key_files)}")
+    print(f"  deps        {len(ctx.dependencies)}{': ' + ', '.join(ctx.dependencies[:8]) if ctx.dependencies else ''}")
+    print(f"  patterns    {len(ctx.patterns)}{': ' + ', '.join(p.name for p in ctx.patterns[:6]) if ctx.patterns else ''}")
+    if ctx.conventions:
+        print(f"  conventions {', '.join(ctx.conventions[:5])}")
+    print(STYLE.dim("  use --save to write AGENTS.md"))
+    return EXIT_OK
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    """Inter-agent messaging (TeamInbox)."""
+    from xli.core.inbox import TeamInbox
+
+    box = TeamInbox(project=args.project, team=args.team)
+
+    if args.action == "send":
+        if not (args.sender and args.recipient and args.text):
+            print("usage: xli inbox send --sender A --recipient B --text '...'", file=sys.stderr)
+            return EXIT_USAGE
+        msg = asyncio.run(box.send(args.sender, args.recipient, args.text))
+        if args.json:
+            _emit({"sent": msg.to_dict()}, True)
+        else:
+            print(STYLE.green(f"→ {args.recipient}"), STYLE.dim(msg.id))
+        return EXIT_OK
+
+    if args.action == "read":
+        if not args.recipient:
+            print("usage: xli inbox read --recipient A", file=sys.stderr)
+            return EXIT_USAGE
+        msgs = box.read_messages(args.recipient, limit=args.limit)
+        if args.json:
+            _emit({"agent": args.recipient, "messages": [m.to_dict() for m in msgs]}, True)
+        elif not msgs:
+            print(STYLE.dim(f"no messages for {args.recipient}"))
+        else:
+            for m in msgs:
+                print(f"  {STYLE.dim(m.timestamp[:19])} {STYLE.bold(m.from_agent)}: {m.text}")
+        return EXIT_OK
+
+    if args.action == "broadcast":
+        if not (args.sender and args.text):
+            print("usage: xli inbox broadcast --sender A --text '...'", file=sys.stderr)
+            return EXIT_USAGE
+        sent = asyncio.run(box.broadcast(args.sender, args.text)) or []
+        if args.json:
+            _emit({"sent": [m.to_dict() for m in sent]}, True)
+        elif not sent:
+            print(STYLE.dim("no recipients — nobody has an inbox yet"))
+        else:
+            print(STYLE.green(f"→ {len(sent)} agent(s): ") + ", ".join(m.to_agent for m in sent))
+        return EXIT_OK
+
+    # status
+    agents = sorted(f.stem for f in box.base_dir.glob("*.jsonl")) if box.base_dir.is_dir() else []
+    if args.json:
+        _emit(
+            {
+                "project": box.project,
+                "team": box.team,
+                "dir": str(box.base_dir),
+                "agents": [{"agent": a, "messages": len(box.read_messages(a))} for a in agents],
+            },
+            True,
+        )
+    else:
+        print(STYLE.dim(f"{box.project}/{box.team} → {box.base_dir}"))
+        if not agents:
+            print(STYLE.dim("  no agents yet"))
+        for a in agents:
+            print(f"  {a:<20} {len(box.read_messages(a))} message(s)")
+    return EXIT_OK
+
+
 def cmd_plugins(args: argparse.Namespace) -> int:
     """Inspect and control the internal (XPI) plugin system."""
     from xli.xpi.manager import XPI_DIR, XpiManager
@@ -685,6 +799,25 @@ def build_parser() -> argparse.ArgumentParser:
     nvim.add_argument("--target", help="install into this directory instead of the nvim config")
     nvim.add_argument("--json", action="store_true")
     nvim.set_defaults(func=cmd_nvim)
+
+    # --- scout
+    scout = sub.add_parser("scout", help="scan the project, generate AGENTS.md")
+    scout.add_argument("path", nargs="?", help="project root (default: cwd)")
+    scout.add_argument("--save", action="store_true", help="write AGENTS.md")
+    scout.add_argument("--json", action="store_true")
+    scout.set_defaults(func=cmd_scout)
+
+    # --- inbox
+    inbox = sub.add_parser("inbox", help="inter-agent messaging")
+    inbox.add_argument("action", choices=["status", "send", "read", "broadcast"], nargs="?", default="status")
+    inbox.add_argument("--sender", help="sending agent id")
+    inbox.add_argument("--recipient", help="receiving agent id")
+    inbox.add_argument("--text", help="message body")
+    inbox.add_argument("--project", default="default")
+    inbox.add_argument("--team", default="default")
+    inbox.add_argument("--limit", type=int, default=50)
+    inbox.add_argument("--json", action="store_true")
+    inbox.set_defaults(func=cmd_inbox)
 
     # --- plugins (XPI)
     plugins = sub.add_parser("plugins", help="internal (XPI) plugins")

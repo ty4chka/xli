@@ -17,34 +17,51 @@ class FileOps:
 
     @staticmethod
     def atomic_write(path: str, content: str, mode: str = "w") -> bool:
-        """Write file atomically using temp file + rename"""
+        """Write a file atomically via temp file + rename.
+
+        Returns False rather than raising when the write cannot happen: the
+        contract is a boolean, so a caller checking the result must not also
+        have to catch NotADirectoryError from the mkdir below.
+        """
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write to temp file in same directory
-        fd, temp_path = tempfile.mkstemp(
-            dir=str(target.parent),
-            prefix=f".{target.name}.tmp_"
-        )
-
+        # Write to a temp file in the same directory, then rename over the
+        # target. Same-directory matters: os.replace is only atomic within one
+        # filesystem.
+        fd = None
+        temp_path = None
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.tmp_")
+
             with os.fdopen(fd, mode) as f:
+                fd = None  # the file object owns the descriptor now
                 f.write(content)
                 f.flush()
-                os.fsync(fd)
+                os.fsync(f.fileno())
 
-            # Atomic rename
             os.replace(temp_path, str(target))
-            logger.log_structured("INFO", "file", f"Atomic write: {path}")
+            temp_path = None  # successfully consumed by the rename
+            logger.log_structured("INFO", "file", f"atomic write: {path}")
             return True
 
-        except Exception as e:
-            logger.log_error("file", f"Atomic write failed: {path}", exc=e)
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
+        except OSError as exc:
+            logger.log_error("file", f"atomic write failed: {path}", exc=exc)
             return False
+
+        finally:
+            # Never leave a half-written temp file behind, whichever step failed.
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
 
     @staticmethod
     def read_lines(path: str, encoding: str = "utf-8") -> list:

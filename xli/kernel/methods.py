@@ -204,11 +204,102 @@ def build_kernel(
         return {"state": XpiState().all()}
 
     @server.method("plugins.dispatch", required=("hook",), doc="Fire an XPI hook now.")
-    def plugins_dispatch(hook: str, context: Optional[Dict[str, Any]] = None):
+    def plugins_dispatch(hook: str, context: dict[str, Any] | None = None):
         from xli.xpi.manager import XpiManager
 
         manager = state.setdefault("plugins", XpiManager())
         return manager.dispatch(hook, **(context or {})).to_dict()
+
+    # ---------------------------------------------------------------- context
+    @server.method("context.scout", doc="Scan the project and report its shape.")
+    def context_scout(path: str | None = None):
+        from dataclasses import asdict
+
+        from xli.core.context_scout import ContextScout
+
+        scout = ContextScout(path or str(root))
+        ctx = scout.scan()
+        return {
+            "name": ctx.name,
+            "language": ctx.language,
+            "framework": ctx.framework,
+            "key_files": ctx.key_files,
+            "dependencies": ctx.dependencies,
+            "conventions": ctx.conventions,
+            "patterns": [asdict(pat) for pat in ctx.patterns],
+        }
+
+    @server.method(
+        "context.agents_md", required=(), doc="Generate (and optionally write) AGENTS.md."
+    )
+    def context_agents_md(path: str | None = None, save: bool = False):
+        from xli.core.context_scout import ContextScout
+
+        scout = ContextScout(path or str(root))
+        if save:
+            written = scout.save_agents_md()
+            return {"saved": True, "path": str(written)}
+        return {"saved": False, "content": scout.generate_agents_md()}
+
+    # ------------------------------------------------------------------ inbox
+    def _inbox(project: str | None, team: str | None):
+        from xli.core.inbox import TeamInbox
+
+        key = (project or "default", team or "default")
+        existing = state.get("inboxes", {}).get(key)
+        if existing is None:
+            existing = TeamInbox(project=key[0], team=key[1])
+            state.setdefault("inboxes", {})[key] = existing
+        return existing
+
+    @server.method("inbox.send", required=("sender", "recipient", "text"), doc="Message an agent.")
+    async def inbox_send(sender: str, recipient: str, text: str,
+                         project: str | None = None, team: str | None = None):
+        msg = await _inbox(project, team).send(sender, recipient, text)
+        return {"message": msg.to_dict()}
+
+    @server.method("inbox.read", required=("agent",), doc="Read an agent's inbox.")
+    def inbox_read(agent: str, since: str | None = None, limit: int = 50,
+                   project: str | None = None, team: str | None = None):
+        msgs = _inbox(project, team).read_messages(agent, since=since, limit=limit)
+        return {"agent": agent, "count": len(msgs), "messages": [m.to_dict() for m in msgs]}
+
+    @server.method("inbox.broadcast", required=("sender", "text"), doc="Message every agent.")
+    async def inbox_broadcast(sender: str, text: str, exclude: list[str] | None = None,
+                              project: str | None = None, team: str | None = None):
+        sent = await _inbox(project, team).broadcast(sender, text, exclude=exclude or [])
+        return {"sent": [m.to_dict() for m in (sent or [])]}
+
+    @server.method("inbox.status", doc="Inbox directory and per-agent message counts.")
+    def inbox_status(project: str | None = None, team: str | None = None):
+        box = _inbox(project, team)
+        agents = sorted(
+            f.stem for f in box.base_dir.glob("*.jsonl") if f.is_file()
+        ) if box.base_dir.is_dir() else []
+        return {
+            "project": box.project,
+            "team": box.team,
+            "dir": str(box.base_dir),
+            "agents": [
+                {"agent": a, "messages": len(box.read_messages(a))} for a in agents
+            ],
+        }
+
+    # ------------------------------------------------------------------- heal
+    @server.method("heal.analyze", required=("error",), doc="Classify an error as retryable.")
+    async def heal_analyze(error: str, context: str = ""):
+        from xli.core.self_healing import get_healing_engine
+
+        analysis = await get_healing_engine().analyze_error(
+            RuntimeError(error), context
+        )
+        return analysis.to_dict()
+
+    @server.method("heal.history", doc="Errors seen by the healing engine.")
+    def heal_history():
+        from xli.core.self_healing import get_healing_engine
+
+        return {"history": get_healing_engine().error_history}
 
     # ----------------------------------------------------------------- doctor
     @server.method("doctor", doc="Environment report.")

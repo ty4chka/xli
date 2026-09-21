@@ -17,6 +17,9 @@ import difflib
 import fnmatch
 import re
 import subprocess
+
+from xli.core.exec_guard import run_guarded_shell
+from xli.core.shell_safety import is_shell_command_safe
 from pathlib import Path
 from typing import Any
 
@@ -393,17 +396,19 @@ def bash(command: str, cwd: str = "", timeout: int = 60) -> ToolResult:
     if workdir and not Path(workdir).is_dir():
         raise ToolError(f"no such working directory: {workdir}")
 
+    # Defense in depth behind the permission policy: one blocklist and one
+    # guarded runner for the whole tree, so secrets are scrubbed from the
+    # child environment and memory/CPU limits actually apply.
+    safe, reason = is_shell_command_safe(command)
+    if not safe:
+        raise ToolError(f"blocked by shell safety: {reason}")
+
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=workdir,
-            capture_output=True,
-            text=True,
-            timeout=max(1, int(timeout)),
-        )
+        proc = run_guarded_shell(command, timeout=max(1, int(timeout)), cwd=workdir)
     except subprocess.TimeoutExpired:
         raise ToolError(f"command timed out after {timeout}s: {command}") from None
+    except ValueError as exc:
+        raise ToolError(str(exc)) from None
 
     stdout = _truncate(proc.stdout or "")
     stderr = _truncate(proc.stderr or "")

@@ -112,6 +112,7 @@ class Agent:
         role: str = "coder",
         max_skills_context: int = 4,
         plugins: Any = None,
+        healer: Any = None,
     ):
         self.provider = provider
         self.role = role
@@ -120,6 +121,9 @@ class Agent:
         # XPI plugins observe the loop through hooks. Injected rather than
         # looked up so tests (and an embedder) control exactly what is loaded.
         self.plugins = plugins
+        # SelfHealingEngine: when set, a transient provider failure is retried
+        # with backoff instead of ending the run on the first hiccup.
+        self.healer = healer
         self.policy = policy or Policy(mode=Mode.CONFIRM)
         self.registry = registry if registry is not None else default_registry(policy=self.policy)
         if self.registry.policy is None:
@@ -201,9 +205,7 @@ class Agent:
             self.emit("step", index=index, max_steps=self.max_steps)
 
             try:
-                raw = await self.provider.chat(
-                    messages, temperature=self.temperature, max_tokens=self.max_tokens
-                )
+                raw = await self._chat_with_healing(messages)
             except Exception as exc:  # noqa: BLE001 - provider faults are reported, not fatal
                 stopped = "provider_error"
                 final_text = f"provider error: {type(exc).__name__}: {exc}"
@@ -295,6 +297,37 @@ class Agent:
             seconds=seconds,
             repairs=repairs,
         )
+
+    # ----------------------------------------------------------------- healing
+    async def _chat_with_healing(self, messages: list) -> str:
+        """Call the provider, retrying transient failures if a healer is set.
+
+        Only the *classification* decides whether to retry: a 429 or a 503 gets
+        another attempt with backoff, while an auth failure or a syntax error
+        fails immediately, because retrying those just burns time and quota.
+        """
+        try:
+            return await self.provider.chat(
+                messages, temperature=self.temperature, max_tokens=self.max_tokens
+            )
+        except Exception as exc:
+            if self.healer is None:
+                raise
+
+            analysis = await self.healer.analyze_error(exc, context="provider.chat")
+            if not analysis.retryable:
+                raise
+
+            self.emit(
+                "repair",
+                detail=f"retrying {analysis.error_type}: {analysis.suggested_approach}",
+            )
+            return await self.healer.retry_with_backoff(
+                self.provider.chat,
+                messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
 
     # ---------------------------------------------------------------- plugins
     def notify_plugins(self, hook: str, **context: Any) -> None:

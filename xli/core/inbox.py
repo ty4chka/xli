@@ -35,8 +35,27 @@ class InboxMessage:
             "text": self.text,
             "timestamp": self.timestamp,
             "team": self.team,
-            "project": self.project
+            "project": self.project,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "InboxMessage":
+        """Rebuild a message from its on-disk form.
+
+        The wire form uses "from"/"to" (because "from" is a keyword, the field
+        is named from_agent). Constructing with **data therefore raised
+        TypeError on every line, which read_messages swallowed — the inbox
+        wrote messages it could never read back.
+        """
+        return cls(
+            id=data["id"],
+            from_agent=data.get("from") or data.get("from_agent", ""),
+            to_agent=data.get("to") or data.get("to_agent", ""),
+            text=data.get("text", ""),
+            timestamp=data.get("timestamp", ""),
+            team=data.get("team", "default"),
+            project=data.get("project", "default"),
+        )
 
 
 class TeamInbox:
@@ -86,19 +105,24 @@ class TeamInbox:
         return msg
 
     async def broadcast(self, from_agent: str, text: str, exclude: list[str] = None):
-        """Broadcast message to all agents"""
+        """Send to every agent that already has an inbox.
+
+        Returns the messages sent. This used to return None, so a caller could
+        not tell "broadcast to nobody" from "broadcast to everyone" — and had
+        no way to report who was reached.
+        """
         exclude = exclude or []
 
-        # Find all agents
-        agents = []
-        for f in self.base_dir.glob("*.jsonl"):
-            agent_name = f.stem
-            if agent_name != from_agent and agent_name not in exclude:
-                agents.append(agent_name)
+        agents = [
+            f.stem
+            for f in sorted(self.base_dir.glob("*.jsonl"))
+            if f.stem != from_agent and f.stem not in exclude
+        ]
 
-        # Send to all
+        sent = []
         for agent in agents:
-            await self.send(from_agent, agent, text)
+            sent.append(await self.send(from_agent, agent, text))
+        return sent
 
     def read_messages(self, agent: str, since: str = None, limit: int = 50) -> list[InboxMessage]:
         """Read messages for agent"""
@@ -107,6 +131,7 @@ class TeamInbox:
             return []
 
         messages = []
+        skipped = 0
         try:
             with open(inbox_path, encoding="utf-8") as f:
                 for line in f:
@@ -115,14 +140,30 @@ class TeamInbox:
                         continue
                     try:
                         data = json.loads(line)
-                        if since and data.get("timestamp", "") < since:
-                            continue
-                        messages.append(InboxMessage(**data))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except json.JSONDecodeError:
+                        # A torn final line from a crashed writer is normal for
+                        # append-only JSONL; skip it, keep the rest.
+                        skipped += 1
+                        continue
+                    try:
+                        msg = InboxMessage.from_dict(data)
+                    except (KeyError, TypeError) as exc:
+                        skipped += 1
+                        logger.log_structured(
+                            "WARN", "inbox", f"unreadable message in {agent}: {exc}"
+                        )
+                        continue
+                    if since and msg.timestamp < since:
+                        continue
+                    messages.append(msg)
+        except OSError as exc:
+            logger.log_error("inbox", f"could not read inbox for {agent}", exc=exc)
+            return []
 
+        if skipped:
+            logger.log_structured(
+                "WARN", "inbox", f"skipped {skipped} malformed line(s) in {agent}'s inbox"
+            )
         return messages[-limit:]
 
     def register_callback(self, agent: str, callback: callable):
@@ -179,9 +220,8 @@ class AgentCoordinator:
                              f"{msg.to_agent} received message from {msg.from_agent}")
 
         # Auto-wake if agent is idle
-        if msg.to_agent in self.agents:
-            if not self.active_sessions.get(msg.to_agent, False):
-                await self.wake_agent(msg.to_agent, msg)
+        if msg.to_agent in self.agents and not self.active_sessions.get(msg.to_agent, False):
+            await self.wake_agent(msg.to_agent, msg)
 
     async def wake_agent(self, agent_id: str, msg: InboxMessage):
         """Wake up idle agent with message"""

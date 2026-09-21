@@ -5,10 +5,18 @@ Auto-discovers project structure and coding patterns
 """
 
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass
 
 from xli.core.logger import StructuredLogger
+
+#: Directories that hold generated or third-party content. Scanning them makes
+#: a "project structure" report describe build output instead of the project.
+_IGNORED_DIRS = frozenset({
+    "build", "dist", "out", "target", "node_modules", "__pycache__",
+    "venv", "env", "site-packages", "coverage", "htmlcov", "egg-info",
+})
 
 logger = StructuredLogger("xli.context")
 
@@ -169,12 +177,16 @@ class ContextScout:
         found = []
         for pattern in key_patterns:
             for f in self.project_path.rglob(pattern):
-                if f.is_file() and not any(part.startswith('.') for part in f.parts[:-1]):
-                    rel = str(f.relative_to(self.project_path))
-                    if rel not in found:
-                        found.append(rel)
+                if not f.is_file():
+                    continue
+                if any(part in _IGNORED_DIRS or part.startswith('.') for part in f.parts[:-1]):
+                    continue
+                rel = str(f.relative_to(self.project_path))
+                if rel not in found:
+                    found.append(rel)
 
-        return found[:30]  # Limit
+        found.sort()
+        return found[:30]
 
     def _discover_patterns(self) -> list[ProjectPattern]:
         """Discover coding patterns from source files"""
@@ -255,30 +267,60 @@ class ContextScout:
         return conventions
 
     def _get_dependencies(self) -> list[str]:
-        """Get project dependencies"""
-        deps = []
+        """Project dependencies, from whichever manifest is present.
 
-        # Python
+        pyproject.toml is checked because it is the modern Python standard;
+        relying only on requirements.txt silently reports zero dependencies
+        for any project that declares them in pyproject.
+        """
+        deps: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: str) -> None:
+            name = name.strip()
+            if name and not name.startswith("#") and name.lower() not in seen:
+                seen.add(name.lower())
+                deps.append(name)
+
+        # Python: pyproject.toml (PEP 621)
+        pyproject = self.project_path / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                import tomllib
+
+                data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                project = data.get("project", {})
+                for requirement in project.get("dependencies", []):
+                    # "httpx>=0.27.0" -> "httpx"
+                    add(re.split(r"[<>=!~\[; ]", requirement, maxsplit=1)[0])
+                for extras in project.get("optional-dependencies", {}).values():
+                    for requirement in extras:
+                        add(re.split(r"[<>=!~\[; ]", requirement, maxsplit=1)[0])
+            except Exception as exc:
+                logger.log_structured("WARN", "context", f"pyproject.toml unreadable: {exc}")
+
+        # Python: requirements.txt
         req = self.project_path / "requirements.txt"
         if req.exists():
             try:
-                for line in req.read_text().split('\n')[:20]:
-                    if line.strip() and not line.startswith('#'):
-                        deps.append(line.strip().split('==')[0].split('>=')[0])
-            except Exception:
+                for line in req.read_text(encoding="utf-8", errors="replace").splitlines()[:50]:
+                    if line.strip() and not line.lstrip().startswith("#"):
+                        add(re.split(r"[<>=!~\[; ]", line.strip(), maxsplit=1)[0])
+            except OSError:
                 pass
 
         # Node
         pkg = self.project_path / "package.json"
         if pkg.exists():
             try:
-                data = json.loads(pkg.read_text())
-                for dep in list(data.get('dependencies', {}).keys())[:20]:
-                    deps.append(dep)
-            except Exception:
+                data = json.loads(pkg.read_text(encoding="utf-8"))
+                for group in ("dependencies", "devDependencies"):
+                    for dep in list(data.get(group, {}).keys())[:30]:
+                        add(dep)
+            except (json.JSONDecodeError, OSError):
                 pass
 
-        return deps
+        return deps[:40]
 
     def generate_agents_md(self) -> str:
         """Generate AGENTS.md content"""

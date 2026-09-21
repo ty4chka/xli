@@ -24,14 +24,26 @@ class ErrorAnalysis:
     suggested_approach: str
     context: dict[str, Any]
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error_type": self.error_type,
+            "severity": self.severity,
+            "retryable": self.retryable,
+            "suggested_approach": self.suggested_approach,
+            "context": self.context,
+        }
+
 
 class SelfHealingEngine:
     """Auto-retry and error recovery"""
 
-    def __init__(self, max_retries: int = 3, base_delay: float = 1.0):
+    def __init__(self, max_retries: int = 3, base_delay: float = 1.0, sleeper=None):
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.error_history: list[dict] = []
+        # Injectable so an embedder (or a test) is not forced to wait out the
+        # real backoff. base_delay=0 keeps the shape without the wall time.
+        self._sleep = sleeper or asyncio.sleep
 
     async def heal(self, task: str, error: Exception,
                    attempt_func: Callable, context: str = "") -> Any:
@@ -54,7 +66,7 @@ class SelfHealingEngine:
                                  f"Retry {attempt + 1}/{self.max_retries}",
                                  {"delay": delay})
 
-            await asyncio.sleep(delay)
+            await self._sleep(delay)
 
             try:
                 # Modify approach based on analysis
@@ -71,7 +83,7 @@ class SelfHealingEngine:
                 self.error_history.append({
                     "attempt": attempt + 1,
                     "error": str(e),
-                    "analysis": analysis
+                    "analysis": analysis.to_dict(),
                 })
 
         logger.log_structured("ERROR", "heal", "All healing attempts exhausted")
@@ -81,19 +93,54 @@ class SelfHealingEngine:
         """Analyze error and classify"""
         error_str = str(error)
         error_type = type(error).__name__
+        haystack = f"{error_type}: {error_str}".lower()
 
-        # Quick classification
-        retryable_errors = [
-            "Timeout", "Connection", "RateLimit", "Temporary",
-            "ServiceUnavailable", "Network"
-        ]
-        fatal_errors = [
-            "SyntaxError", "IndentationError", "ImportError",
-            "ModuleNotFoundError", "TypeError", "ValueError"
-        ]
+        # Classify on the *message* first. Providers raise generic exception
+        # types and put the real signal in the text, so matching on the class
+        # name alone gets it backwards: ValueError("429 rate limited") used to
+        # be reported critical and non-retryable, and RuntimeError("HTTP 503")
+        # was never retried at all.
+        retryable_signals = (
+            "429", "rate limit", "rate_limit", "too many requests",
+            "502", "503", "504", "bad gateway", "service unavailable",
+            "gateway timeout", "timeout", "timed out", "temporary",
+            "connection reset", "connection refused", "connection aborted",
+            "eof occurred", "temporarily", "try again", "overloaded",
+        )
+        fatal_signals = (
+            "syntaxerror", "indentationerror", "unauthorized", "401",
+            "forbidden", "403", "invalid api key", "authentication",
+            "no such file", "permission denied", "not implemented", "501",
+        )
+        retryable_types = (
+            "timeout", "connection", "ratelimit", "temporary",
+            "serviceunavailable", "network",
+        )
+        fatal_types = (
+            "syntaxerror", "indentationerror", "importerror",
+            "modulenotfounderror", "attributeerror", "keyerror",
+        )
 
-        retryable = any(e in error_type for e in retryable_errors)
-        fatal = any(e in error_type for e in fatal_errors)
+        signal_retryable = any(token in haystack for token in retryable_signals)
+        signal_fatal = any(token in haystack for token in fatal_signals)
+        type_retryable = any(token in error_type.lower() for token in retryable_types)
+        type_fatal = any(token in error_type.lower() for token in fatal_types)
+
+        # A message signal beats a class-name guess, because the message is
+        # specific to this failure while the class is often just generic.
+        if signal_fatal and not signal_retryable:
+            retryable, fatal = False, True
+        elif signal_retryable:
+            retryable, fatal = True, False
+        elif type_fatal:
+            retryable, fatal = False, True
+        elif type_retryable:
+            retryable, fatal = True, False
+        else:
+            # No signal either way. Retrying with a *modified* approach is the
+            # whole point of this engine, so an unrecognised failure gets one
+            # more try rather than being declared hopeless.
+            retryable, fatal = True, False
 
         severity = "critical" if fatal else ("high" if not retryable else "medium")
 
@@ -138,7 +185,12 @@ Return JSON:
             error_type=error_type,
             severity=severity,
             retryable=retryable,
-            suggested_approach="Retry with modified parameters" if retryable else "Manual fix required",
+            suggested_approach=(
+                "Retry with a modified approach: simplify the request, reduce scope, "
+                "or use a different tool"
+                if retryable
+                else "Manual fix required: the failure is not transient"
+            ),
             context={"original_error": error_str}
         )
 
@@ -161,10 +213,22 @@ Return JSON:
                 delay = self.base_delay * (2 ** attempt) + random.uniform(0, 1)
                 logger.log_structured("DEBUG", "heal",
                                      f"Backoff retry {attempt + 1}, delay {delay:.1f}s")
-                await asyncio.sleep(delay)
+                await self._sleep(delay)
 
 
-def get_healing_engine() -> SelfHealingEngine:
-    """Get SelfHealingEngine instance"""
-    return SelfHealingEngine()
+_ENGINE: SelfHealingEngine | None = None
+
+
+def get_healing_engine(**kwargs: Any) -> SelfHealingEngine:
+    """Process-wide SelfHealingEngine. Pass kwargs only on first call."""
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = SelfHealingEngine(**kwargs)
+    return _ENGINE
+
+
+def reset_healing_engine() -> None:
+    """Drop the singleton (used by tests and `xli doctor`)."""
+    global _ENGINE
+    _ENGINE = None
 

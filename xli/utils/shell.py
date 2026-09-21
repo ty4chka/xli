@@ -1,65 +1,64 @@
 #!/usr/bin/env python3
 """
-XLI Utils — SafeShell: dangerous check, timeout
+XLI Utils — SafeShell: validation and guarded execution.
+
+This used to carry its own copy of a dangerous-command blocklist. That was the
+fifth such list in the tree, and it had a real hole: the check was guarded by
+`if "rm -rf" in cmd and "rm -rf ." not in cmd`, which *exempted* `rm -rf .` —
+so "recursively delete the current directory" passed straight through, while
+`rm -rf /tmp/foo` was rejected merely because it contains the substring
+`rm -rf /`.
+
+There is now one list, in `xli.core.shell_safety`, and one guarded runner, in
+`xli.core.exec_guard` (which also scrubs secrets from the environment and
+applies memory/CPU limits). Anything that wants to run a shell command goes
+through those two, so the safety rules cannot drift between call sites.
 """
+
+from __future__ import annotations
 
 import subprocess
 
+from xli.core.exec_guard import run_guarded_shell
 from xli.core.logger import StructuredLogger
+from xli.core.shell_safety import is_shell_command_safe
 
 logger = StructuredLogger("xli.utils.shell")
 
-# Dangerous commands blacklist
-DANGEROUS_PATTERNS = [
-    "rm -rf /", "mkfs", "dd if=/dev/zero", ">:(){ :|:& };:",
-    "chmod 777 /", "mv /* /dev/null", "curl .*| sh", "wget .*| sh",
-    "sudo rm -rf", "rm -rf ~", "del /f /s /q", "format c:",
-    "shutdown", "reboot", "poweroff", "halt",
-]
-
 
 class SafeShell:
-    """Safe shell execution with validation"""
+    """Safe shell execution. Thin facade over the shared guard."""
 
     @staticmethod
     def is_dangerous(cmd: str) -> str | None:
-        """Check if command is dangerous. Returns reason or None."""
-        cmd_lower = cmd.lower().strip()
+        """Return why a command is dangerous, or None if it looks fine.
 
-        for pattern in DANGEROUS_PATTERNS:
-            if pattern.lower() in cmd_lower:
-                return f"Dangerous pattern detected: {pattern}"
-
-        # Check for rm -rf without specific path
-        if "rm -rf" in cmd_lower and "rm -rf ." not in cmd_lower:
-            parts = cmd_lower.split()
-            if "rm" in parts and "-rf" in parts:
-                idx = parts.index("-rf") if "-rf" in parts else parts.index("rm") + 1
-                if idx + 1 < len(parts):
-                    target = parts[idx + 1]
-                    if target in ("/", "/*", "~", "~/*", "."):
-                        return f"Dangerous rm -rf target: {target}"
-
-        return None
+        Kept as a predicate rather than a raise, so callers can turn the
+        verdict into a tool result or a confirmation prompt instead of an
+        exception.
+        """
+        safe, reason = is_shell_command_safe(cmd)
+        return None if safe else reason
 
     @staticmethod
-    def run(cmd: str, timeout: int = 30, cwd: str | None = None,
-            capture: bool = True) -> subprocess.CompletedProcess:
-        """Run shell command safely"""
+    def run(
+        cmd: str,
+        timeout: int = 30,
+        cwd: str | None = None,
+        capture: bool = True,
+        max_memory_mb: int = 512,
+    ) -> subprocess.CompletedProcess:
+        """Validate, then run with a scrubbed env and resource limits.
+
+        Raises ValueError if the command is blocked. `capture=False` is not
+        supported by the guarded runner — everything is captured so secrets
+        cannot leak to the parent's streams — so it is accepted only for
+        signature compatibility and ignored.
+        """
         danger = SafeShell.is_dangerous(cmd)
         if danger:
             logger.log_structured("WARN", "shell", f"BLOCKED: {danger}")
-            raise ValueError(f"Dangerous command blocked: {danger}")
+            raise ValueError(f"blocked: {danger}")
 
-        logger.log_structured("INFO", "shell", f"Executing: {cmd[:80]}")
-
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=capture,
-            text=True,
-            timeout=timeout,
-            cwd=cwd
-        )
-
-        return result
+        logger.log_structured("INFO", "shell", f"executing: {cmd[:80]}")
+        return run_guarded_shell(cmd, timeout=timeout, cwd=cwd, max_memory_mb=max_memory_mb)
