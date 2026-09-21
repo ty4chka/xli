@@ -506,6 +506,73 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_ENVIRONMENT if blocking else EXIT_OK
 
 
+def cmd_plugins(args: argparse.Namespace) -> int:
+    """Inspect and control the internal (XPI) plugin system."""
+    from xli.xpi.manager import XPI_DIR, XpiManager
+    from xli.xpi.state import XpiState
+
+    manager = XpiManager()
+
+    if args.action == "list":
+        plugins = manager.list_plugins()
+        if args.json:
+            _emit({"dir": str(XPI_DIR), "plugins": plugins}, True)
+        else:
+            print(STYLE.dim(f"plugin dir: {XPI_DIR}"))
+            if not plugins:
+                print(STYLE.dim("  no plugins installed"))
+            for info in plugins:
+                state = (
+                    STYLE.green("active")
+                    if info["enabled"] and not info["error"]
+                    else STYLE.red("error")
+                    if info["error"]
+                    else STYLE.dim("disabled")
+                )
+                print(f"  {state:<8} {STYLE.bold(info['name']):<20} v{info['version']}")
+                if info["error"]:
+                    print(STYLE.red(f"           {info['error']}"))
+                elif info["hooks"]:
+                    print(STYLE.dim(f"           hooks: {', '.join(info['hooks'])}"))
+        return EXIT_OK
+
+    if args.action in ("enable", "disable"):
+        if not args.name:
+            print(f"usage: xli plugins {args.action} <name>", file=sys.stderr)
+            return EXIT_USAGE
+        ok = manager.set_enabled(args.name, args.action == "enable")
+        print(
+            STYLE.green(f"{args.action}d {args.name}")
+            if ok
+            else STYLE.red(f"no such plugin: {args.name}")
+        )
+        return EXIT_OK if ok else EXIT_USAGE
+
+    if args.action == "reload":
+        if not args.name:
+            print("usage: xli plugins reload <name>", file=sys.stderr)
+            return EXIT_USAGE
+        ok = manager.reload(args.name)
+        print(
+            STYLE.green(f"reloaded {args.name}") if ok else STYLE.red(f"reload failed: {args.name}")
+        )
+        return EXIT_OK if ok else EXIT_FAILED
+
+    if args.action == "state":
+        _emit(XpiState().all(), args.json)
+        return EXIT_OK
+
+    if args.action == "dispatch":
+        if not args.name:
+            print("usage: xli plugins dispatch <hook>", file=sys.stderr)
+            return EXIT_USAGE
+        _emit(manager.dispatch(args.name).to_dict(), args.json)
+        return EXIT_OK
+
+    print(f"unknown plugins action: {args.action}", file=sys.stderr)
+    return EXIT_USAGE
+
+
 def cmd_nvim(args: argparse.Namespace) -> int:
     from xli.nvim.install import install_plugin
 
@@ -618,6 +685,18 @@ def build_parser() -> argparse.ArgumentParser:
     nvim.add_argument("--target", help="install into this directory instead of the nvim config")
     nvim.add_argument("--json", action="store_true")
     nvim.set_defaults(func=cmd_nvim)
+
+    # --- plugins (XPI)
+    plugins = sub.add_parser("plugins", help="internal (XPI) plugins")
+    plugins.add_argument(
+        "action",
+        choices=["list", "enable", "disable", "reload", "state", "dispatch"],
+        nargs="?",
+        default="list",
+    )
+    plugins.add_argument("name", nargs="?", help="plugin name, or hook for dispatch")
+    plugins.add_argument("--json", action="store_true")
+    plugins.set_defaults(func=cmd_plugins)
 
     # --- doctor
     doctor = sub.add_parser("doctor", help="report what is and is not working")

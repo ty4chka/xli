@@ -173,6 +173,43 @@ def build_kernel(
             "transcript": session.transcript(),
         }
 
+    # ---------------------------------------------------------------- plugins
+    @server.method("plugins.list", doc="Installed XPI plugins.")
+    def plugins_list():
+        from xli.xpi.manager import XpiManager
+
+        manager = state.setdefault("plugins", XpiManager())
+        return {"plugins": manager.list_plugins(), "active": manager.registry.list_active()}
+
+    @server.method("plugins.reload", required=("name",), doc="Hot-reload one plugin.")
+    def plugins_reload(name: str):
+        from xli.xpi.manager import XpiManager
+
+        manager = state.setdefault("plugins", XpiManager())
+        return {"name": name, "reloaded": manager.reload(name)}
+
+    @server.method(
+        "plugins.set_enabled", required=("name", "enabled"), doc="Enable or disable a plugin."
+    )
+    def plugins_set_enabled(name: str, enabled: bool):
+        from xli.xpi.manager import XpiManager
+
+        manager = state.setdefault("plugins", XpiManager())
+        return {"name": name, "ok": manager.set_enabled(name, bool(enabled))}
+
+    @server.method("plugins.state", doc="Shared XPI state across frontends.")
+    def plugins_state():
+        from xli.xpi.state import XpiState
+
+        return {"state": XpiState().all()}
+
+    @server.method("plugins.dispatch", required=("hook",), doc="Fire an XPI hook now.")
+    def plugins_dispatch(hook: str, context: Optional[Dict[str, Any]] = None):
+        from xli.xpi.manager import XpiManager
+
+        manager = state.setdefault("plugins", XpiManager())
+        return manager.dispatch(hook, **(context or {})).to_dict()
+
     # ----------------------------------------------------------------- doctor
     @server.method("doctor", doc="Environment report.")
     def doctor():

@@ -111,11 +111,15 @@ class Agent:
         on_event: EventHandler | None = None,
         role: str = "coder",
         max_skills_context: int = 4,
+        plugins: Any = None,
     ):
         self.provider = provider
         self.role = role
         self.max_skills_context = max_skills_context
         self._skills: str | None = None
+        # XPI plugins observe the loop through hooks. Injected rather than
+        # looked up so tests (and an embedder) control exactly what is loaded.
+        self.plugins = plugins
         self.policy = policy or Policy(mode=Mode.CONFIRM)
         self.registry = registry if registry is not None else default_registry(policy=self.policy)
         if self.registry.policy is None:
@@ -178,6 +182,9 @@ class Agent:
     async def run(self, task: str) -> RunResult:
         started = time.perf_counter()
         self.emit(EVENT_AGENT, phase="start", task=task, max_steps=self.max_steps)
+        self.notify_plugins(
+            "on_agent_start", task=task, max_steps=self.max_steps, mode=self.policy.mode.value
+        )
 
         if self.session is not None:
             self.session.add_user(task)
@@ -264,6 +271,13 @@ class Agent:
             self.emit("warning", message=f"hit the {self.max_steps}-step limit")
 
         seconds = time.perf_counter() - started
+        self.notify_plugins(
+            "on_agent_end",
+            ok=stopped in ("done", "no_tool_calls"),
+            summary=summary,
+            steps=len(steps),
+            stopped_reason=stopped,
+        )
         self.emit(
             EVENT_AGENT,
             phase="end",
@@ -282,13 +296,33 @@ class Agent:
             repairs=repairs,
         )
 
+    # ---------------------------------------------------------------- plugins
+    def notify_plugins(self, hook: str, **context: Any) -> None:
+        """Broadcast an XPI hook. Plugins must never be able to stop the agent."""
+        if self.plugins is None:
+            return
+        try:
+            report = self.plugins.dispatch(hook, **context)
+        except Exception:  # noqa: BLE001 - plugin system failure is not fatal
+            return
+        for failure in report.errors:
+            self.emit(
+                "warning",
+                message=f"plugin {failure['plugin']} failed in {hook}: {failure['error']}",
+            )
+
     # ------------------------------------------------------------------ tools
     async def _run_calls(self, calls: list[ToolCall]) -> list[ToolResult]:
         """Execute calls sequentially; order matters because they share state."""
         results: list[ToolResult] = []
         for call in calls:
             self.emit("tool_call", name=call.name, args=call.args)
-            results.append(await self.registry.execute(call.name, call.args))
+            self.notify_plugins("on_tool_call", name=call.name, args=call.args)
+            result = await self.registry.execute(call.name, call.args)
+            self.notify_plugins(
+                "on_tool_result", name=call.name, ok=result.ok, summary=result.render()
+            )
+            results.append(result)
         return results
 
     @staticmethod

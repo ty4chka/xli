@@ -58,6 +58,7 @@ want the compiled kernel.
 | `xli kernel` | `preflight` · `build` · `status` · `clean` |
 | `xli tools` | `list` · `schema` · `prompt` · `enable` · `disable` |
 | `xli session` | `list` · `show` · `delete` |
+| `xli plugins` | `list` · `enable` · `disable` · `reload` · `state` · `dispatch` |
 | `xli skills` | list skill definitions |
 | `xli mcp` | list MCP servers |
 | `xli nvim` | install the Neovim plugin |
@@ -180,6 +181,46 @@ work.
 
 ---
 
+## Internal plugins (XPI)
+
+XPI is xli's in-process plugin system — distinct from MCP servers (separate
+processes) and skills (markdown guidance). Drop a package into
+`~/.xli/xpi/<name>/` and the agent calls into it as it works.
+
+```
+~/.xli/xpi/audit-trail/
+  manifest.json   {"name":"audit-trail","version":"1.0.0","main":"plugin.py"}
+  plugin.py       class AuditTrail(XpiPlugin): ...
+```
+
+```python
+from xli.xpi.base import XpiPlugin
+
+class AuditTrail(XpiPlugin):
+    def on_tool_call(self, context):      # {name, args}
+        ...
+    def on_agent_end(self, context):      # {ok, summary, steps, stopped_reason}
+        ...
+```
+
+Hooks: `on_load`, `on_unload`, `on_agent_start`, `on_tool_call`,
+`on_tool_result`, `on_agent_end`, `on_tui_mount`, `on_nvim_attach`,
+`on_headless_start`. Set `"platform": "nvim"` in the manifest to restrict a
+plugin to one frontend.
+
+```bash
+xli plugins list
+xli plugins disable audit-trail
+xli plugins reload audit-trail      # hot reload
+xli plugins state                   # state shared across frontends
+```
+
+A plugin that raises is caught, logged and reported — it will not stop the
+agent, and the other plugins still run. `xli.xpi.state.XpiState` gives plugins
+one persisted key/value store shared by the TUI, Neovim and headless runs.
+
+---
+
 ## The wire protocol
 
 Newline-delimited JSON-RPC 2.0. One object per line, UTF-8.
@@ -194,7 +235,7 @@ Newline-delimited JSON-RPC 2.0. One object per line, UTF-8.
 ```
 
 Start with `hello` and you are told whether your protocol version matches.
-`rpc.methods` lists everything. See `xli/kernel/methods.py` for the map and
+`rpc.methods` lists everything (`agent.*`, `tools.*`, `config.*`, `kernel.*`, `session.*`, `plugins.*`, `doctor`). See `xli/kernel/methods.py` for the map and
 `xli/kernel/protocol.py` for the error codes.
 
 ---
@@ -222,6 +263,7 @@ xli/session/    append-only conversation history
 xli/manager/    config and the Cython build
 xli/accel.py    import hook for the compiled kernel
 xli/tui/        full-screen interface
+xli/xpi/        internal plugin system (in-process, lifecycle hooks)
 xli/nvim/       plugin installer + the Lua plugin it ships
 xli/cli.py      command line
 ```
