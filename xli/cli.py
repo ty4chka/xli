@@ -121,6 +121,20 @@ def _build_policy(config, args: argparse.Namespace):
     )
 
 
+def _work_mode(args: argparse.Namespace):
+    """Resolve --plan/--build into a plan_build.Mode, or None.
+
+    Returns None when neither flag is given, so the caller's normal permission
+    posture is untouched.
+    """
+    requested = getattr(args, "work_mode", None)
+    if not requested:
+        return None
+    from xli.core.plan_build import Mode as WorkMode
+
+    return WorkMode.PLAN if requested == "plan" else WorkMode.BUILD
+
+
 def _build_registry(config, policy, args: argparse.Namespace):
     from xli.tools.registry import default_registry
 
@@ -131,10 +145,15 @@ def _build_registry(config, policy, args: argparse.Namespace):
 
 
 def _build_provider(config):
-    """Resolve the configured provider, with a clear message when the key is absent."""
+    """Resolve the configured provider, with a clear message when the key is absent.
+
+    The config is passed through deliberately: get_provider() used to read its
+    own singleton, so `--provider` on this command was silently ignored and the
+    default provider was built instead.
+    """
     from xli.providers.base import get_provider
 
-    return get_provider()
+    return get_provider(config)
 
 
 # ------------------------------------------------------------------- commands
@@ -176,6 +195,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         registry=registry,
         policy=policy,
         session=session,
+        mode=_work_mode(args),
         max_steps=int(config.get("agent.max_steps")),
         temperature=float(config.get("provider.temperature")),
         max_tokens=int(config.get("provider.max_tokens")),
@@ -900,6 +920,21 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-steps", type=int, help="step budget for one task")
     parser.add_argument("--deny", action="append", help="comma-separated deny patterns")
     parser.add_argument("--project", help="project directory (default: cwd)")
+    work = parser.add_mutually_exclusive_group()
+    work.add_argument(
+        "--plan",
+        action="store_const",
+        const="plan",
+        dest="work_mode",
+        help="plan mode: read-only analysis, no file writes or shell",
+    )
+    work.add_argument(
+        "--build",
+        action="store_const",
+        const="build",
+        dest="work_mode",
+        help="build mode: may modify files and run commands",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

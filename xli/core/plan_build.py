@@ -4,8 +4,14 @@ XLI Plan/Build Mode Switcher
 Like OpenCode: Plan = read-only analysis, Build = can modify files
 """
 
-from enum import Enum
+from __future__ import annotations
+
 from dataclasses import dataclass
+from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from xli.permissions.policy import Mode as PolicyMode
 
 from xli.core.logger import StructuredLogger
 
@@ -27,6 +33,19 @@ class ModeContext:
     can_run_shell: bool
 
 
+#: Tools available in each mode, by real registry name.
+#:
+#: These used to be ["read", "browse"] and ["read", "write", "edit", "bash",
+#: "task"]. Neither "browse" nor "task" exists in xli.tools.registry, so
+#: can_use_tool() denied ls, glob, grep, git and todo in plan mode and ls, glob,
+#: grep, git and todo in build mode. tests/test_plan_build.py pins every name
+#: here against the live registry so this cannot drift again.
+PLAN_TOOLS: list[str] = ["read", "ls", "glob", "grep", "todo"]
+BUILD_TOOLS: list[str] = [
+    "read", "ls", "glob", "grep", "todo", "write", "edit", "bash", "git",
+]
+
+
 MODE_CONFIGS = {
     Mode.PLAN: ModeContext(
         mode=Mode.PLAN,
@@ -46,7 +65,7 @@ You CAN:
 
 Output your analysis as structured text with clear sections.
 """,
-        allowed_tools=["read", "browse"],
+        allowed_tools=PLAN_TOOLS,
         can_modify_files=False,
         can_run_shell=False
     ),
@@ -73,7 +92,7 @@ You MUST:
 
 Use tools to accomplish tasks. Think step by step.
 """,
-        allowed_tools=["read", "write", "edit", "bash", "task"],
+        allowed_tools=BUILD_TOOLS,
         can_modify_files=True,
         can_run_shell=True
     )
@@ -149,3 +168,48 @@ def set_mode_switcher(switcher: ModeSwitcher):
     """Set global mode switcher"""
     global _mode_switcher
     _mode_switcher = switcher
+
+
+# --------------------------------------------------------------- permissions
+def reset_mode_switcher() -> None:
+    """Drop the singleton. Tests need this; nothing else should."""
+    global _mode_switcher
+    _mode_switcher = None
+
+
+def permission_mode(mode: Mode) -> PolicyMode:
+    """Map a plan/build mode onto the permissions policy.
+
+    Plan mode is read-only in substance, so it maps to Policy mode READONLY —
+    the enforcement lives in xli.permissions.policy, not in can_use_tool().
+    Having two independent gates that disagree is how a tool call ends up
+    allowed by one and blocked by the other. Build mode keeps the caller's
+    existing posture, defaulting to CONFIRM.
+    """
+    from xli.permissions.policy import Mode as PolicyMode
+
+    if mode is Mode.PLAN:
+        return PolicyMode.READONLY
+    return PolicyMode.CONFIRM
+
+
+def policy_for(mode: Mode, *, allow: list[str] | None = None, root=None):
+    """Build a Policy enforcing `mode`. Convenience for callers and the kernel."""
+    from xli.permissions.policy import Policy
+
+    return Policy(mode=permission_mode(mode), allow=list(allow or []), root=root)
+
+
+__all__ = [
+    "BUILD_TOOLS",
+    "MODE_CONFIGS",
+    "PLAN_TOOLS",
+    "Mode",
+    "ModeContext",
+    "ModeSwitcher",
+    "get_mode_switcher",
+    "permission_mode",
+    "policy_for",
+    "reset_mode_switcher",
+    "set_mode_switcher",
+]

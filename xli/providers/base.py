@@ -44,14 +44,28 @@ _NO_KEY_PROVIDERS = frozenset({"ollama", "local"})
 _provider_instance = None
 
 
-def get_provider() -> AbstractProvider:
-    """Factory: returns configured provider instance"""
+def get_provider(config: Any = None, *, force: bool = False) -> AbstractProvider:
+    """Build (or return the cached) provider for `config`.
+
+    Two defects fixed here:
+
+      * `config` used to be ignored. The function read the module-level
+        get_config() singleton, so a caller that had applied `--provider` to its
+        own Config still got whatever the singleton said — `xli run --provider
+        openai` silently built mistral. Passing a config now works.
+
+      * The cached instance was returned before any of that was consulted, so
+        even with the config honoured, a second call with a different provider
+        returned the first one. `force=True` rebuilds.
+    """
     global _provider_instance
 
-    if _provider_instance is not None:
+    if config is None:
+        config = get_config()
+
+    if _provider_instance is not None and not force:
         return _provider_instance
 
-    config = get_config()
     provider_name = config.default_provider()
 
     logger.log_structured("INFO", "providers", f"Creating provider: {provider_name}")

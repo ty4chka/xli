@@ -27,11 +27,14 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
 from xli.parse import ParsedResponse, ToolCall, parse_response
 from xli.permissions.policy import Mode, Policy
+
+if TYPE_CHECKING:
+    from xli.core.plan_build import Mode as WorkMode
 from xli.session import Session
 from xli.tools.base import ToolResult
 from xli.tools.registry import ToolRegistry, default_registry
@@ -113,6 +116,7 @@ class Agent:
         max_skills_context: int = 4,
         plugins: Any = None,
         healer: Any = None,
+        mode: WorkMode | None = None,
     ):
         self.provider = provider
         self.role = role
@@ -124,7 +128,18 @@ class Agent:
         # SelfHealingEngine: when set, a transient provider failure is retried
         # with backoff instead of ending the run on the first hiccup.
         self.healer = healer
-        self.policy = policy or Policy(mode=Mode.CONFIRM)
+        # Plan/build mode, when given, drives both the system message and the
+        # permission posture, so the two cannot disagree. An explicit `policy`
+        # still wins — the caller is closer to the truth about intent.
+        self.mode = mode
+        if policy is not None:
+            self.policy = policy
+        elif mode is not None:
+            from xli.core.plan_build import policy_for
+
+            self.policy = policy_for(mode)
+        else:
+            self.policy = Policy(mode=Mode.CONFIRM)
         self.registry = registry if registry is not None else default_registry(policy=self.policy)
         if self.registry.policy is None:
             self.registry.policy = self.policy
@@ -154,6 +169,10 @@ class Agent:
         guidance reliably beats a model improvising from scratch.
         """
         prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=self.registry.prompt_block())
+        if self.mode is not None:
+            from xli.core.plan_build import MODE_CONFIGS
+
+            prompt += f"\n{MODE_CONFIGS[self.mode].system_message}"
         if include_skills and self.skills_context:
             prompt += f"\n{self.skills_context}"
         return prompt
