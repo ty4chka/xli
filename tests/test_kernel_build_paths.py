@@ -411,3 +411,50 @@ class TestOneBadModuleDoesNotSinkTheRest:
 
         assert "retrying per module" in report.log
         assert "broken_one" in report.log
+
+
+# --------------------------------------------------------------- install layout
+class TestInstalledPackageLayout:
+    """`xli kernel build` is normally run against an installed package, not a
+    checkout -- that is how the Termux report that found this arrived. The
+    anchors are derived from __file__, so they must resolve correctly when the
+    package lives in site-packages too.
+    """
+
+    def test_the_anchors_follow_the_package(self, tmp_path, monkeypatch):
+        from xli.manager import kernel_build as kb
+
+        installed = tmp_path / "site-packages" / "xli"
+        installed.mkdir(parents=True)
+
+        monkeypatch.setattr(kb, "PACKAGE_ROOT", installed)
+        monkeypatch.setattr(kb, "CKERNEL_DIR", installed / "_ckernel")
+        monkeypatch.setattr(kb, "BUILD_LIB_ROOT", installed.parent)
+
+        assert kb.PACKAGE_ROOT.parent == kb.BUILD_LIB_ROOT
+        assert kb.CKERNEL_DIR == kb.PACKAGE_ROOT / "_ckernel"
+
+    def test_output_lands_inside_the_installed_package(self, tmp_path):
+        from setuptools import Extension
+        from setuptools.command.build_ext import build_ext
+        from setuptools.dist import Distribution
+
+        installed = tmp_path / "site-packages" / "xli"
+        ckernel = installed / "_ckernel"
+        build_lib_root = installed.parent  # site-packages
+
+        ext = Extension("xli._ckernel.diff_engine", ["x.py"])
+        dist = Distribution({"ext_modules": [ext]})
+        cmd = build_ext(dist)
+        cmd.build_lib = str(build_lib_root)
+        cmd.finalize_options()
+
+        output = Path(cmd.get_ext_fullpath("xli._ckernel.diff_engine"))
+        assert output.parent == ckernel
+        # and not loose in site-packages, where it would be unimportable
+        assert output.parent != build_lib_root
+
+    def test_a_source_checkout_resolves_the_same_way(self):
+        """Same arithmetic, different root — so the two layouts cannot diverge."""
+        assert PACKAGE_ROOT.parent == BUILD_LIB_ROOT
+        assert CKERNEL_DIR == PACKAGE_ROOT / "_ckernel"
