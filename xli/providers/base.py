@@ -102,7 +102,26 @@ def get_provider(config: Any = None, *, force: bool = False) -> AbstractProvider
     kwargs = {"api_key": api_key}
     if default_model:
         kwargs["model"] = default_model
-    _provider_instance = provider_cls(**kwargs)
+
+    # A configured model and endpoint override the class defaults. Both are
+    # keyword-only on OpenAICompatibleProvider, and the providers that are not
+    # OpenAI-shaped accept **kwargs, so this is safe for all of them.
+    model = config.model()
+    if model:
+        kwargs["model"] = model
+    base_url = config.base_url()
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    try:
+        _provider_instance = provider_cls(**kwargs)
+    except TypeError as exc:
+        # A provider that takes neither base_url nor model should still build
+        # rather than fail the whole run because of an optional setting.
+        logger.log_error(
+            "providers", f"{provider_name} rejected {sorted(kwargs)}; retrying minimal", exc=exc
+        )
+        _provider_instance = provider_cls(api_key=api_key)
 
     logger.log_structured("INFO", "providers", f"Provider ready: {provider_name}")
     return _provider_instance

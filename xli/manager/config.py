@@ -37,6 +37,10 @@ DEFAULTS: dict[str, Any] = {
     # --- model
     "provider": "mistral",
     "provider.model": "mistral-large-latest",
+    #: Point the provider at another OpenAI-compatible endpoint. Empty means
+    #: "use the provider's own URL". Set this for a proxy or a self-hosted
+    #: gateway, e.g. https://api.xkiro.com/v1
+    "provider.base_url": "",
     "provider.temperature": 0.4,
     "provider.max_tokens": 4000,
     "provider.timeout": 120,
@@ -76,6 +80,10 @@ DEFAULTS: dict[str, Any] = {
 
 # key -> (coercer, validator-error-message)
 def _as_str(value: Any) -> str:
+    # None means "unset", not the four-character string "None". Without this a
+    # cleared value came back as a literal URL/model named None.
+    if value is None:
+        return ""
     return str(value)
 
 
@@ -113,6 +121,7 @@ def _as_list(value: Any) -> list[str]:
 COERCERS: dict[str, Callable[[Any], Any]] = {
     "provider": _as_str,
     "provider.model": _as_str,
+    "provider.base_url": _as_str,
     "provider.temperature": _as_float,
     "provider.max_tokens": _as_int,
     "provider.timeout": _as_int,
@@ -333,6 +342,10 @@ class Config:
     def model(self) -> str:
         return str(self.get("provider.model", "mistral-large-latest"))
 
+    def base_url(self) -> str:
+        """A custom endpoint, or "" to use the provider's own."""
+        return str(self.get("provider.base_url", "") or "")
+
     def temperature(self) -> float:
         return float(self.get("provider.temperature", 0.4))
 
@@ -401,15 +414,43 @@ def _flatten(raw: dict[str, Any], prefix: str = "") -> dict[str, Any]:
 
 
 def _nest(flat: dict[str, Any]) -> dict[str, Any]:
-    """Inverse of _flatten, for a human-readable config file."""
+    """Inverse of _flatten, for a human-readable config file.
+
+    Some keys are both a scalar and a namespace prefix: `provider` is a setting
+    in its own right *and* the parent of `provider.model` and
+    `provider.base_url`. Those two cannot share a slot — one is a string, the
+    other a dict.
+
+    The old code walked into the string, hit its defensive break, and dropped
+    the value on the floor. Because `setdefault` returns the existing string and
+    `break` skips the for/else, the assignment never ran, so
+    `xli config set provider.model gpt-4o` printed "set ... wrote ..." and
+    persisted nothing. Any key under a scalar prefix was affected.
+
+    Such keys are now written flat, which _flatten reads back unchanged.
+    """
     nested: dict[str, Any] = {}
     for key, value in sorted(flat.items()):
         parts = key.split(".")
+        if len(parts) == 1:
+            nested[key] = value
+            continue
+
         cursor = nested
+        blocked = False
         for part in parts[:-1]:
-            cursor = cursor.setdefault(part, {})
-            if not isinstance(cursor, dict):  # pragma: no cover - defensive
+            existing = cursor.get(part)
+            if existing is None:
+                cursor[part] = {}
+                cursor = cursor[part]
+            elif isinstance(existing, dict):
+                cursor = existing
+            else:
+                blocked = True   # a scalar already owns this slot
                 break
+
+        if blocked or isinstance(cursor.get(parts[-1]), dict):
+            nested[key] = value  # cannot nest it; keep the dotted form
         else:
             cursor[parts[-1]] = value
     return nested
@@ -420,6 +461,8 @@ _ENV_OVERRIDES = {
     "MODE": "permissions.mode",
     "PERMISSION_MODE": "permissions.mode",
     "MODEL": "provider.model",
+    "BASE_URL": "provider.base_url",
+    "PROVIDER_BASE_URL": "provider.base_url",
     "MAX_STEPS": "agent.max_steps",
     "LANGUAGE": "ui.language",
     "LANG": "ui.language",
