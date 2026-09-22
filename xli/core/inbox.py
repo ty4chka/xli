@@ -254,8 +254,11 @@ class AgentCoordinator:
         # Send task
         await self.inbox.send(from_agent, to_agent, f"TASK: {task}")
 
-        # Wait for response (with timeout)
-        start_time = asyncio.get_event_loop().time()
+        # Wait for response (with timeout). get_running_loop(), not
+        # get_event_loop(): this is inside a coroutine so the loop is already
+        # running, and get_event_loop() is deprecated for that case.
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
         timeout = 120  # 2 minutes
 
         while True:
@@ -264,7 +267,7 @@ class AgentCoordinator:
                 if msg.from_agent == to_agent and "TASK:" not in msg.text:
                     return msg.text
 
-            if asyncio.get_event_loop().time() - start_time > timeout:
+            if loop.time() - start_time > timeout:
                 return "[TIMEOUT: No response from agent]"
 
             await asyncio.sleep(1)

@@ -18,10 +18,11 @@ parsed call back to `execute()`.
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass
 from typing import Any
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 
 from xli.permissions.policy import MUTATING_TOOLS, Policy
 from xli.tools.base import FunctionTool, Param, Tool, ToolError, ToolResult, ToolSpec
@@ -44,7 +45,12 @@ class ToolRegistry:
         self.policy = policy
         #: Called when the policy says a call needs a human yes/no. Return True
         #: to proceed. Frontends replace this to show a real prompt.
-        self.confirm_handler: Callable[[str, dict[str, Any], str], bool] | None = None
+        #: Called when a tool needs confirmation. May be a plain callable
+        #: returning bool, or a coroutine function — the latter is what an
+        #: interactive frontend needs, since waiting for a human is async.
+        self.confirm_handler: (
+            Callable[[str, dict[str, Any], str], bool | Awaitable[bool]] | None
+        ) = None
 
     # ------------------------------------------------------------ catalogue
     def register(
@@ -179,7 +185,7 @@ class ToolRegistry:
             return ToolResult.failure(f"tool {name!r} is disabled", tool=name)
 
         if self.policy is not None:
-            allowed = self._authorise(name, tool_obj.spec, args)
+            allowed = await self._authorise(name, tool_obj.spec, args)
             if allowed is not True:
                 return allowed
 
@@ -206,10 +212,18 @@ class ToolRegistry:
             entry.failures += 1
         return result
 
-    def _authorise(
+    async def _authorise(
         self, name: str, spec: ToolSpec, args: dict[str, Any]
     ) -> bool | ToolResult:
-        """Returns True to proceed, or a ToolResult to short-circuit with."""
+        """Returns True to proceed, or a ToolResult to short-circuit with.
+
+        Async because a confirm handler may need to wait for a human. The
+        synchronous version forced interactive frontends to block the running
+        event loop, and the only way to do that from inside a coroutine is
+        loop.run_until_complete(), which raises "This event loop is already
+        running". The TUI hit exactly that. A handler may now be either a plain
+        callable or a coroutine function.
+        """
         decision = self.policy.check(name, args)
         if not decision.allowed:
             return ToolResult.failure(
@@ -224,6 +238,8 @@ class ToolRegistry:
                     data=decision.to_dict(),
                 )
             approved = self.confirm_handler(name, args, decision.reason)
+            if inspect.isawaitable(approved):
+                approved = await approved
             if not approved:
                 return ToolResult.failure(
                     f"refused by user: {decision.reason}", tool=name, data=decision.to_dict()

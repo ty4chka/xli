@@ -362,7 +362,8 @@ class Tui:
             self.draw()
 
     def request_approval(self, tool: str, args: dict[str, Any], reason: str) -> asyncio.Future:
-        loop = asyncio.get_event_loop()
+        # Called from inside the app's running loop, so get_running_loop().
+        loop = asyncio.get_running_loop()
         future = loop.create_future()
         self.state.approval = {"tool": tool, "args": args, "reason": reason}
         self.state.approval_future = future
@@ -386,7 +387,7 @@ class Tui:
             self.draw()
 
             if self.policy is not None and not self.state.allow_all:
-                registry.confirm_handler = self._confirm_sync
+                registry.confirm_handler = self._confirm_async
 
             agent = Agent(
                 self.provider,
@@ -409,15 +410,22 @@ class Tui:
 
         self._agent_task = asyncio.create_task(runner())
 
-    def _confirm_sync(self, tool: str, args: dict[str, Any], reason: str) -> bool:
-        """Bridge the synchronous policy callback onto the async approval UI."""
+    async def _confirm_async(self, tool: str, args: dict[str, Any], reason: str) -> bool:
+        """Bridge the policy's confirmation callback onto the async approval UI.
+
+        This used to be a synchronous method that pumped the loop with
+        loop.run_until_complete(asyncio.sleep(...)). It is called from the
+        registry, which runs inside this same event loop, so that call raised
+        "This event loop is already running" and every confirmation in the TUI
+        failed. The registry now accepts a coroutine handler, so this awaits
+        properly instead.
+        """
         if self.state.allow_all:
             return True
         future = self.request_approval(tool, args, reason)
-        loop = asyncio.get_event_loop()
         while not future.done():
             self._pump_input()
-            loop.run_until_complete(asyncio.sleep(0.02))
+            await asyncio.sleep(0.02)
         return bool(future.result())
 
     def _pump_input(self) -> None:
