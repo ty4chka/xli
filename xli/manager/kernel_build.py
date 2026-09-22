@@ -32,6 +32,7 @@ import shutil
 import sys
 import sysconfig
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,17 @@ CORE_DIR = PACKAGE_ROOT / "core"
 CKERNEL_DIR = PACKAGE_ROOT / "_ckernel"
 MANIFEST = CKERNEL_DIR / "manifest.json"
 BUILD_DIR = CKERNEL_DIR / "build"
+
+#: What to pass setuptools as --build-lib.
+#:
+#: Extensions are named `xli._ckernel.<stem>`, and setuptools reproduces the
+#: whole dotted package path *under* --build-lib. Pointing --build-lib at
+#: CKERNEL_DIR therefore wrote to `_ckernel/xli/_ckernel/<stem>.so`, while
+#: is_usable() and the accel loader both look for `_ckernel/<stem>.so`. The
+#: compile succeeded and the artefact simply landed somewhere nothing reads, so
+#: every module was reported as "compiler finished but no .so was produced".
+#: Anchoring at the repository root makes the two agree.
+BUILD_LIB_ROOT = PACKAGE_ROOT.parent
 
 #: Modules that must never be compiled: they are imported during interpreter
 #: startup or by the build itself, and a bad .so there is unrecoverable.
@@ -219,6 +231,32 @@ def _python_tag() -> str:
     return f"cp{sys.version_info.major}{sys.version_info.minor}-{sys.platform}"
 
 
+def find_compiled(name: str) -> list[Path]:
+    """Every compiled artefact for `name`, wherever under CKERNEL_DIR it landed.
+
+    Shared by is_usable(), the build report and the accel loader so the three
+    cannot disagree about where an artefact is allowed to be. Searching
+    recursively is deliberate: setuptools reproduces the extension's dotted
+    package path under --build-lib, so the location depends on how the
+    extension was named, and a flat glob silently found nothing when that
+    nesting changed.
+    """
+    if not CKERNEL_DIR.is_dir():
+        return []
+    found = [
+        p
+        for p in sorted(CKERNEL_DIR.rglob(f"{name}.*.so"))
+        if BUILD_DIR not in p.parents
+    ]
+    if not found:
+        found = [
+            p
+            for p in sorted(CKERNEL_DIR.rglob(f"{name}.pyd"))
+            if BUILD_DIR not in p.parents
+        ]
+    return found
+
+
 def is_usable(name: str, manifest: Manifest | None = None) -> bool:
     """True if a compiled module exists and still matches its Python source."""
     manifest = manifest or Manifest.load()
@@ -234,7 +272,7 @@ def is_usable(name: str, manifest: Manifest | None = None) -> bool:
     if entry.get("sha256") != source_hash(source):
         return False  # source changed since the build; the .so is stale
 
-    return bool(list(CKERNEL_DIR.glob(f"{name}.*.so")) or list(CKERNEL_DIR.glob(f"{name}.pyd")))
+    return bool(find_compiled(name))
 
 
 # ------------------------------------------------------------------------ build
@@ -346,14 +384,21 @@ def build(
         sys.argv = [
             "xli-kernel-build",
             "build_ext",
-            "--build-lib", str(CKERNEL_DIR),
+            "--build-lib", str(BUILD_LIB_ROOT),
             "--build-temp", str(BUILD_DIR / "temp"),
         ]
-        setup(
-            name="xli-ckernel",
-            ext_modules=cythonized,
-            script_args=sys.argv[1:],
-        )
+        # setup() re-reads pyproject.toml even though all we want is build_ext,
+        # so setuptools' packaging deprecations (the project.license table form,
+        # licence classifiers) get printed over the build output. They say
+        # nothing about whether the kernel compiled, and they made a successful
+        # build look like a wall of errors.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            setup(
+                name="xli-ckernel",
+                ext_modules=cythonized,
+                script_args=sys.argv[1:],
+            )
     except Exception as exc:  # noqa: BLE001 - compiler output is unstructured
         log_chunks.append(f"{type(exc).__name__}: {exc}")
         report.ok = False
@@ -373,8 +418,8 @@ def build(
         if is_usable(source.stem, Manifest.load()):
             report.built.append(source.stem)
             continue
-        # The .so exists but the manifest does not know about it yet.
-        if list(CKERNEL_DIR.glob(f"{source.stem}.*.so")):
+        # The artefact exists but the manifest does not know about it yet.
+        if find_compiled(source.stem):
             manifest.modules[source.stem] = {
                 "sha256": source_hash(source),
                 "python": _python_tag(),

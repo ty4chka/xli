@@ -26,7 +26,7 @@ import importlib.machinery
 import importlib.util
 import sys
 
-from xli.manager.kernel_build import CKERNEL_DIR, Manifest, is_usable
+from xli.manager.kernel_build import CKERNEL_DIR, Manifest, find_compiled, is_usable
 
 CORE_PACKAGE = "xli.core"
 HOOK_NAME = "xli-accel"
@@ -56,9 +56,7 @@ class KernelFinder(importlib.abc.MetaPathFinder):
         if not is_usable(stem, self.manifest):
             return None
 
-        candidates = sorted(CKERNEL_DIR.glob(f"{stem}.*.so")) or sorted(
-            CKERNEL_DIR.glob(f"{stem}.pyd")
-        )
+        candidates = find_compiled(stem)
         if not candidates:
             return None
 
