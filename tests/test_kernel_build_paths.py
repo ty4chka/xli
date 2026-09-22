@@ -14,6 +14,8 @@ lookup, which is the part that was wrong.
 
 from pathlib import Path
 
+import pytest
+
 from xli.manager import kernel_build as kb
 from xli.manager.kernel_build import (
     BUILD_LIB_ROOT,
@@ -266,3 +268,146 @@ class TestPackagingMetadata:
         source = inspect.getsource(kb.build)
         assert "catch_warnings" in source
         assert "simplefilter" in source
+
+
+# ------------------------------------------------------------ fault isolation
+class TestOneBadModuleDoesNotSinkTheRest:
+    """build() promises "a module that fails is reported and skipped; the rest
+    still build". It did not hold: setup() runs once for the whole batch and
+    raises on the first compile error, and the handler then marked every module
+    in the batch as failed — so one bad module reported all of them broken and
+    hid which one was at fault.
+
+    These drive the real build(), with only the compiler stand-ins replaced.
+    """
+
+    @pytest.fixture
+    def scratch(self, tmp_path, monkeypatch):
+        import types
+
+        import Cython.Build
+
+        from xli.manager import kernel_build as kb
+
+        core = tmp_path / "core"
+        core.mkdir()
+        for name in ("good_one", "broken_one", "good_two"):
+            (core / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+        monkeypatch.setattr(kb, "CORE_DIR", core)
+        monkeypatch.setattr(kb, "CKERNEL_DIR", tmp_path / "_ckernel")
+        monkeypatch.setattr(kb, "BUILD_DIR", tmp_path / "_ckernel" / "build")
+        monkeypatch.setattr(kb, "MANIFEST", tmp_path / "_ckernel" / "manifest.json")
+        monkeypatch.setattr(kb, "BUILD_LIB_ROOT", tmp_path)
+        monkeypatch.setattr(
+            kb,
+            "preflight",
+            lambda: types.SimpleNamespace(ok=True, missing=[], checks=[], to_dict=lambda: {}),
+        )
+        # cythonize passes the extensions straight through
+        monkeypatch.setattr(Cython.Build, "cythonize", lambda exts, **kw: exts)
+
+        def make_setup(behaviour):
+            calls = []
+
+            def fake_setup(*, name=None, ext_modules=None, script_args=None, **kw):
+                names = [e.name for e in ext_modules]
+                calls.append(len(names))
+                behaviour(names)
+                for ext in ext_modules:
+                    stem = ext.name.rsplit(".", 1)[-1]
+                    kb.CKERNEL_DIR.mkdir(parents=True, exist_ok=True)
+                    (
+                        kb.CKERNEL_DIR / f"{stem}.cpython-311-x86_64-linux-gnu.so"
+                    ).write_bytes(b"x")
+
+            fake_setup.calls = calls
+            return fake_setup
+
+        return kb, core, make_setup
+
+    def test_only_the_broken_module_is_reported(self, scratch):
+        kb, core, make_setup = scratch
+
+        def behaviour(names):
+            if any("broken_one" in n for n in names):
+                raise SystemExit("error: command 'gcc' failed with exit code 1")
+
+        import setuptools
+
+        setup = make_setup(behaviour)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(setuptools, "setup", setup)
+            report = kb.build()
+
+        assert sorted(report.built) == ["good_one", "good_two"]
+        assert [f["module"] for f in report.failed] == ["broken_one"]
+        assert report.ok is False
+
+    def test_the_failure_carries_the_compilers_own_message(self, scratch):
+        kb, core, make_setup = scratch
+
+        def behaviour(names):
+            if any("broken_one" in n for n in names):
+                raise SystemExit("error: command 'gcc' failed with exit code 1")
+
+        import setuptools
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(setuptools, "setup", make_setup(behaviour))
+            report = kb.build()
+
+        error = report.failed[0]["error"]
+        assert "gcc" in error
+        assert "no .so was produced" not in error, (
+            "the generic message blames the wrong thing and hides the real cause"
+        )
+
+    def test_a_clean_batch_is_not_rebuilt_module_by_module(self, scratch):
+        """The fast path must stay parallel — no per-module retry on success."""
+        kb, core, make_setup = scratch
+
+        import setuptools
+
+        setup = make_setup(lambda names: None)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(setuptools, "setup", setup)
+            report = kb.build()
+
+        assert setup.calls == [3], f"expected one batch call, got {setup.calls}"
+        assert sorted(report.built) == ["broken_one", "good_one", "good_two"]
+        assert report.ok is True
+
+    def test_the_retry_passes_one_extension_per_call(self, scratch):
+        kb, core, make_setup = scratch
+
+        def behaviour(names):
+            if any("broken_one" in n for n in names):
+                raise SystemExit("error: command 'gcc' failed with exit code 1")
+
+        import setuptools
+
+        setup = make_setup(behaviour)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(setuptools, "setup", setup)
+            kb.build()
+
+        # one batch call, then one call per module in the retry
+        assert setup.calls[0] == 3
+        assert setup.calls[1:] == [1, 1, 1]
+
+    def test_the_log_records_the_batch_failure_and_the_culprit(self, scratch):
+        kb, core, make_setup = scratch
+
+        def behaviour(names):
+            if any("broken_one" in n for n in names):
+                raise SystemExit("error: command 'gcc' failed with exit code 1")
+
+        import setuptools
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(setuptools, "setup", make_setup(behaviour))
+            report = kb.build()
+
+        assert "retrying per module" in report.log
+        assert "broken_one" in report.log

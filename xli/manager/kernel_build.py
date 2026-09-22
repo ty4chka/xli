@@ -373,6 +373,35 @@ def build(
 
     argv_backup = sys.argv[:]
     log_chunks: list[str] = []
+    per_module_errors: dict[str, str] = {}
+
+    def run_setup(exts: list[Any]) -> None:
+        """Invoke build_ext for these extensions, with setuptools' noise muted.
+
+        setup() re-reads pyproject.toml even though all we want is build_ext, so
+        setuptools' packaging deprecations (the project.license table form,
+        licence classifiers) get printed over the build output. They say nothing
+        about whether the kernel compiled, and they made a successful build look
+        like a wall of errors.
+        """
+        sys.argv = [
+            "xli-kernel-build",
+            "build_ext",
+            "--build-lib", str(BUILD_LIB_ROOT),
+            "--build-temp", str(BUILD_DIR / "temp"),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            setup(name="xli-ckernel", ext_modules=exts, script_args=sys.argv[1:])
+
+    # The whole batch first, so a clean build stays parallel. Only if that
+    # raises do we retry one module at a time to find out which one broke.
+    #
+    # This is what the docstring above has always promised: one awkward module
+    # should not block the other thirty. It did not hold, because setup() is
+    # called once for the batch and raises on the first compile error, and the
+    # handler then marked every module in `todo` as failed — so a single bad
+    # module reported all of them broken and hid which one was at fault.
     try:
         cythonized = cythonize(
             extensions,
@@ -381,34 +410,32 @@ def build(
             quiet=not verbose,
             nthreads=jobs or os.cpu_count() or 1,
         )
-        sys.argv = [
-            "xli-kernel-build",
-            "build_ext",
-            "--build-lib", str(BUILD_LIB_ROOT),
-            "--build-temp", str(BUILD_DIR / "temp"),
-        ]
-        # setup() re-reads pyproject.toml even though all we want is build_ext,
-        # so setuptools' packaging deprecations (the project.license table form,
-        # licence classifiers) get printed over the build output. They say
-        # nothing about whether the kernel compiled, and they made a successful
-        # build look like a wall of errors.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            setup(
-                name="xli-ckernel",
-                ext_modules=cythonized,
-                script_args=sys.argv[1:],
-            )
-    except Exception as exc:  # noqa: BLE001 - compiler output is unstructured
-        log_chunks.append(f"{type(exc).__name__}: {exc}")
-        report.ok = False
+        run_setup(cythonized)
+    except BaseException as exc:  # noqa: BLE001 - setup() may raise SystemExit
+        log_chunks.append(
+            f"batch build failed ({type(exc).__name__}: {exc}); retrying per module"
+        )
         for source in todo:
-            report.failed.append({"module": source.stem, "error": str(exc)})
-        report.log = "\n".join(log_chunks)
-        report.seconds = time.perf_counter() - started
-        return report
+            try:
+                single = cythonize(
+                    [Extension(f"xli._ckernel.{source.stem}", [str(source)])],
+                    compiler_directives={"language_level": "3"},
+                    build_dir=str(BUILD_DIR),
+                    quiet=not verbose,
+                    nthreads=1,
+                )
+                run_setup(single)
+            except BaseException as one:  # noqa: BLE001
+                # Keep the compiler's own words. Without this the report would
+                # fall through to "no .so was produced", which blames the wrong
+                # thing and hides which module actually broke.
+                per_module_errors[source.stem] = f"{type(one).__name__}: {one}"
+                log_chunks.append(f"{source.stem}: {type(one).__name__}: {one}")
     finally:
         sys.argv = argv_backup
+
+    if log_chunks:
+        report.log = "\n".join(log_chunks)
 
     manifest.built_at = time.strftime("%Y-%m-%dT%H:%M:%S")
     manifest.python = _python_tag()
@@ -428,7 +455,12 @@ def build(
             report.built.append(source.stem)
         else:
             report.failed.append(
-                {"module": source.stem, "error": "compiler finished but no .so was produced"}
+                {
+                    "module": source.stem,
+                    "error": per_module_errors.get(
+                        source.stem, "compiler finished but no .so was produced"
+                    ),
+                }
             )
             report.ok = False
 
