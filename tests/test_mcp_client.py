@@ -138,3 +138,109 @@ class TestEveryServerModuleIsImportable:
         if not SERVERS[name]["tools"]:
             pytest.skip(f"{name} ships no server module")
         importlib.import_module(f"xli.mcp.servers.{name}")
+
+
+class TestServersDeclareTheirArguments:
+    """Callers cannot guess a tool's parameters, so the server must publish them.
+
+    MCPBridge used to send every tool the same {"query": ..., "code": ...} bag.
+    Most tools rejected it with "got an unexpected keyword argument", so the
+    pre/post steps silently produced no context at all.
+    """
+
+    @pytest.mark.parametrize("name", sorted(SERVERS))
+    def test_every_tool_advertises_an_input_schema(self, client, name):
+        if not SERVERS[name]["tools"]:
+            pytest.skip(f"{name} ships no server module")
+        for tool in run(client.list_tools(name)):
+            assert "inputSchema" in tool, f"{name}.{tool['name']} declares no schema"
+            schema = tool["inputSchema"]
+            assert schema["type"] == "object"
+            assert "properties" in schema
+
+    @pytest.mark.parametrize("name", sorted(SERVERS))
+    def test_declared_properties_match_the_function_signature(self, client, name):
+        import importlib
+        import inspect
+
+        if not SERVERS[name]["tools"]:
+            pytest.skip(f"{name} ships no server module")
+        module = importlib.import_module(f"xli.mcp.servers.{name}")
+        for tool in run(client.list_tools(name)):
+            fn = module.TOOLS[tool["name"]]
+            expected = {
+                p
+                for p, prm in inspect.signature(fn).parameters.items()
+                if prm.kind not in (prm.VAR_POSITIONAL, prm.VAR_KEYWORD)
+            }
+            assert set(tool["inputSchema"]["properties"]) == expected
+
+    def test_required_lists_only_the_parameters_without_defaults(self):
+        from xli.mcp.serverkit import input_schema
+
+        def tool(a, b, c=3):
+            return (a, b, c)
+
+        schema = input_schema(tool)
+        assert schema["required"] == ["a", "b"]
+
+    def test_a_tool_with_all_defaults_has_no_required(self):
+        from xli.mcp.serverkit import input_schema
+
+        def tool(a=1):
+            return a
+
+        assert "required" not in input_schema(tool)
+
+
+class TestExtraArgumentsAreTolerated:
+    """A caller holding a generic param bag must not break the tool."""
+
+    def test_unknown_keys_are_dropped(self, client):
+        """The exact case that broke the bridge: extra keys in the bag."""
+        result = run(
+            client.call_tool(
+                "knowledge", "search_code", {"query": "parser", "code": "ignored"}
+            )
+        )
+        assert "content" in result
+
+    def test_filter_arguments_keeps_only_declared_names(self):
+        from xli.mcp.serverkit import filter_arguments
+
+        def tool(a, b=2):
+            return (a, b)
+
+        assert filter_arguments(tool, {"a": 1, "z": 9}) == {"a": 1}
+
+    def test_a_kwargs_tool_receives_everything(self):
+        from xli.mcp.serverkit import filter_arguments
+
+        def tool(**kwargs):
+            return kwargs
+
+        assert filter_arguments(tool, {"a": 1, "z": 9}) == {"a": 1, "z": 9}
+
+
+class TestTheBridgeProducesContext:
+    """The regression: pre/post steps returned an empty string every time."""
+
+    def test_pre_step_returns_something_for_a_routed_agent(self):
+        from xli.mcp.bridge import MCPBridge
+
+        bridge = MCPBridge()
+        try:
+            context = run(bridge.run_mcp_pre_step("coder", "fix the parser bug"))
+            assert context, "pre-step produced no context"
+            assert "[knowledge]" in context or "[architecture]" in context
+        finally:
+            bridge.client.close()
+
+    def test_an_agent_with_no_routing_gets_no_context(self):
+        from xli.mcp.bridge import MCPBridge
+
+        bridge = MCPBridge()
+        try:
+            assert run(bridge.run_mcp_pre_step("nobody", "anything")) == ""
+        finally:
+            bridge.client.close()

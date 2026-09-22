@@ -3,6 +3,7 @@
 import json
 import sys
 from pathlib import Path
+from xli.mcp.serverkit import filter_arguments, tool_descriptors
 
 def dependency_graph(directory="."):
     """Построить граф импортов в JSON"""
@@ -85,7 +86,7 @@ def handle_request(request):
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS]},
+            "result": {"tools": tool_descriptors(TOOLS)},
             "id": req_id
         }
     elif method == "tools/call":
@@ -93,7 +94,7 @@ def handle_request(request):
         args = request.get("params", {}).get("arguments", {})
         if tool in TOOLS:
             try:
-                res = TOOLS[tool](**args)
+                res = TOOLS[tool](**filter_arguments(TOOLS[tool], args))
                 return {
                     "jsonrpc": "2.0",
                     "result": {"content": [{"type": "text", "text": res}]},

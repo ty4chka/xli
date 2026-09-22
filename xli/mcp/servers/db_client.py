@@ -6,6 +6,7 @@ MCP DB Client — SQL queries, schema introspection
 import json
 import sys
 from urllib.parse import urlparse
+from xli.mcp.serverkit import filter_arguments, tool_descriptors
 
 def query_sql(connection_string, query, params=None):
     """Execute SQL query safely (read-only by default)"""
@@ -133,7 +134,7 @@ def handle_request(request):
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS]},
+            "result": {"tools": tool_descriptors(TOOLS)},
             "id": req_id
         }
     elif method == "tools/call":
@@ -142,7 +143,7 @@ def handle_request(request):
 
         if tool in TOOLS:
             try:
-                result = TOOLS[tool](**args)
+                result = TOOLS[tool](**filter_arguments(TOOLS[tool], args))
                 return {
                     "jsonrpc": "2.0",
                     "result": {"content": [{"type": "text", "text": result}]},

@@ -5,6 +5,7 @@ import sys
 import hashlib
 from xli.paths import xli_path
 from datetime import datetime
+from xli.mcp.serverkit import filter_arguments, tool_descriptors
 
 STORAGE = xli_path("prompts.json")
 STORAGE.parent.mkdir(exist_ok=True)
@@ -71,7 +72,7 @@ def handle_request(request):
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS]},
+            "result": {"tools": tool_descriptors(TOOLS)},
             "id": req_id
         }
     elif method == "tools/call":
@@ -79,7 +80,7 @@ def handle_request(request):
         args = request.get("params", {}).get("arguments", {})
         if tool in TOOLS:
             try:
-                res = TOOLS[tool](**args)
+                res = TOOLS[tool](**filter_arguments(TOOLS[tool], args))
                 return {
                     "jsonrpc": "2.0",
                     "result": {"content": [{"type": "text", "text": res}]},

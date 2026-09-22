@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from difflib import get_close_matches
+from xli.mcp.serverkit import filter_arguments, tool_descriptors
 
 HISTORY_FILE = Path.home() / ".zsh_history"
 if not HISTORY_FILE.exists():
@@ -61,13 +62,13 @@ def handle_request(req):
     method = req.get("method")
     rid = req.get("id")
     if method == "tools/list":
-        return {"jsonrpc":"2.0","result":{"tools":[{"name":n} for n in TOOLS]},"id":rid}
+        return {"jsonrpc":"2.0","result":{"tools":tool_descriptors(TOOLS)},"id":rid}
     elif method == "tools/call":
         tool = req.get("params",{}).get("name")
         args = req.get("params",{}).get("arguments",{})
         if tool in TOOLS:
             try:
-                res = TOOLS[tool](**args)
+                res = TOOLS[tool](**filter_arguments(TOOLS[tool], args))
                 return {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":res}]},"id":rid}
             except Exception as e:
                 return {"jsonrpc":"2.0","error":{"code":-32000,"message":str(e)},"id":rid}
