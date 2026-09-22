@@ -7,13 +7,13 @@ import sqlite3
 import hashlib
 import json
 import time
-from pathlib import Path
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.cache")
 
-CACHE_DB = Path.home() / ".xli" / "cache.db"
+CACHE_DB = xli_path("cache.db")
 DEFAULT_TTL = 3600  # 1 hour
 MAX_SIZE = 1000  # Max entries
 

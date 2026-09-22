@@ -20,8 +20,12 @@ from pathlib import Path
 
 from xli.kernel.protocol import encode_line
 from xli.kernel.server import KernelServer
+from xli.paths import xli_path
 
-DEFAULT_SOCKET_DIR = Path(os.environ.get("XLI_RUNTIME_DIR", str(Path.home() / ".xli" / "run")))
+#: XLI_RUNTIME_DIR wins, because a socket is a runtime artefact and it is
+#: reasonable to want it on a tmpfs. The fallback still goes through xli_home()
+#: so that relocating xli's state relocates the socket too.
+DEFAULT_SOCKET_DIR = Path(os.environ.get("XLI_RUNTIME_DIR") or xli_path("run"))
 
 
 def socket_path(name: str = "kernel", runtime_dir: Path | None = None) -> Path:

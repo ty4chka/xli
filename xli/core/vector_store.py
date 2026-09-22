@@ -8,6 +8,7 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.vector")
@@ -65,8 +66,8 @@ class CodeVectorStore:
         self.index = None
         self.documents: dict[int, dict] = {}
         self.dimension = 384  # MiniLM dimension
-        self.index_path = Path.home() / ".xli" / "vector.index"
-        self.docs_path = Path.home() / ".xli" / "vector.docs.json"
+        self.index_path = xli_path("vector.index")
+        self.docs_path = xli_path("vector.docs.json")
 
         self._load()
         self._initialized = True

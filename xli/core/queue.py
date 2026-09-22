@@ -6,18 +6,18 @@ XLI Queue v4 — Background tasks, priority, status tracking
 import asyncio
 import json
 import uuid
-from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.queue")
 
-QUEUE_DIR = Path.home() / ".xli" / "queue"
+QUEUE_DIR = xli_path("queue")
 
 
 class TaskPriority(Enum):

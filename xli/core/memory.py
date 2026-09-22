@@ -5,14 +5,14 @@ XLI Memory v4 — SQLite conversations, semantic search by history
 
 import sqlite3
 import hashlib
-from pathlib import Path
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.memory")
 
-MEMORY_DB = Path.home() / ".xli" / "memory.db"
+MEMORY_DB = xli_path("memory.db")
 
 
 class ConversationMemory:

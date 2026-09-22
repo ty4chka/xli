@@ -10,7 +10,7 @@ import sys
 import os
 import traceback
 from datetime import datetime
-from pathlib import Path
+from xli.paths import xli_path
 
 
 # ANSI color codes
@@ -137,8 +137,18 @@ class StructuredLogger:
         self._initialized = True
 
         self.name = name
-        self.log_dir = Path.home() / ".xli" / "logs"
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir = xli_path("logs")
+        # Never let logging take the process down. If the log directory cannot
+        # be created — a read-only filesystem, an XLI_CONFIG_DIR pointing
+        # somewhere unwritable, a permissions problem — fall back to console
+        # only instead of raising out of __init__. This used to be an
+        # unconditional mkdir, which was only safe because ~/.xli is nearly
+        # always writable.
+        self.file_logging = True
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.file_logging = False
 
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
@@ -149,20 +159,23 @@ class StructuredLogger:
             datefmt="%H:%M:%S"
         )
 
-        # All logs
-        fh = logging.FileHandler(self.log_dir / "xli.log", encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(formatter)
-        self.logger.addHandler(fh)
+        if self.file_logging:
+            # All logs
+            fh = logging.FileHandler(self.log_dir / "xli.log", encoding="utf-8")
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(formatter)
+            self.logger.addHandler(fh)
 
-        # Errors only
-        eh = logging.FileHandler(self.log_dir / "errors.log", encoding="utf-8")
-        eh.setLevel(logging.ERROR)
-        eh.setFormatter(formatter)
-        self.logger.addHandler(eh)
+            # Errors only
+            eh = logging.FileHandler(self.log_dir / "errors.log", encoding="utf-8")
+            eh.setLevel(logging.ERROR)
+            eh.setFormatter(formatter)
+            self.logger.addHandler(eh)
 
-        # Structured JSONL
-        self.structured_path = self.log_dir / "structured.log"
+            # Structured JSONL
+            self.structured_path = self.log_dir / "structured.log"
+        else:
+            self.structured_path = None
 
         # Console with colors
         self.use_colors = sys.stderr.isatty() and "NO_COLOR" not in os.environ
@@ -203,11 +216,16 @@ class StructuredLogger:
         if exc_info:
             entry["trace"] = exc_info
 
-        try:
-            with open(self.structured_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-        except Exception as e:
-            self.logger.error(f"Failed to write structured log: {e}")
+        if self.structured_path is not None:
+            try:
+                with open(self.structured_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            except OSError as e:
+                # The directory went away or became unwritable. Say so once
+                # through the console handler rather than raising, and stop
+                # trying: a log write must never break the caller.
+                self.structured_path = None
+                self.logger.warning(f"structured logging disabled: {e}")
 
         # Colored console output
         colored_line = format_log_line(timestamp, level, component, message, self.use_colors)

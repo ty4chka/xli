@@ -4,8 +4,8 @@ XLI Templates v4 — TemplateEngine: fastapi_crud, react_component, cli_tool
 """
 
 import re
-from pathlib import Path
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.templates")
@@ -131,7 +131,7 @@ class TemplateEngine:
 
     def __init__(self):
         self.templates: dict[str, str] = dict(BUILT_IN_TEMPLATES)
-        self.user_templates_dir = Path.home() / ".xli" / "templates"
+        self.user_templates_dir = xli_path("templates")
         self.user_templates_dir.mkdir(parents=True, exist_ok=True)
         self._load_user_templates()
         logger.log_structured("INFO", "templates",

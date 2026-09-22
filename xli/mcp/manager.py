@@ -10,11 +10,12 @@ from typing import Any
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.xpi.manager")
 
-XPI_DIR = Path.home() / ".xli" / "xpi"
+XPI_DIR = xli_path("xpi")
 
 
 @dataclass

@@ -18,11 +18,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.xpi.state")
 
-STATE_FILE = Path.home() / ".xli" / "xpi_state.json"
+STATE_FILE = xli_path("xpi_state.json")
 
 
 class XpiState:

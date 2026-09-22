@@ -6,17 +6,17 @@ XLI Prompt Lab v4 — A/B testing prompts, evaluation, winner selection
 import json
 import hashlib
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 from xli.providers.base import get_provider
 
 logger = StructuredLogger("xli.prompt_lab")
 
-PROMPT_DIR = Path.home() / ".xli" / "prompts"
+PROMPT_DIR = xli_path("prompts")
 
 
 @dataclass

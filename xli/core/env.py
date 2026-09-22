@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.env")
@@ -302,7 +303,7 @@ class EnvironmentAdapter:
 
     def append_history(self, task: str, result: str = "", agent: str = ""):
         """Append to task history"""
-        hist_file = Path.home() / ".xli" / "history.txt"
+        hist_file = xli_path("history.txt")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = f"[{timestamp}] [{agent}] {task}"
         if result:
@@ -316,7 +317,7 @@ class EnvironmentAdapter:
 
     def get_history(self, lines: int = 50) -> list[str]:
         """Read task history"""
-        hist_file = Path.home() / ".xli" / "history.txt"
+        hist_file = xli_path("history.txt")
         if not hist_file.exists():
             return []
         try:

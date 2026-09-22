@@ -3,10 +3,10 @@
 import json
 import sys
 import hashlib
-from pathlib import Path
+from xli.paths import xli_path
 from datetime import datetime
 
-STORAGE = Path.home() / ".xli" / "prompts.json"
+STORAGE = xli_path("prompts.json")
 STORAGE.parent.mkdir(exist_ok=True)
 
 def load_prompts():

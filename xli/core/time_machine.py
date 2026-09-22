@@ -9,11 +9,12 @@ import hashlib
 from pathlib import Path
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.time")
 
-SNAPSHOTS_DIR = Path.home() / ".xli" / "snapshots"
+SNAPSHOTS_DIR = xli_path("snapshots")
 
 
 class TimeMachine:

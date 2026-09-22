@@ -12,6 +12,7 @@ from typing import Any
 from dataclasses import dataclass
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.inbox")
@@ -65,7 +66,7 @@ class TeamInbox:
     def __init__(self, project: str = "default", team: str = "default"):
         self.project = project
         self.team = team
-        self.base_dir = Path.home() / ".xli" / "team_inbox" / project / team
+        self.base_dir = xli_path("team_inbox", project, team)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._callbacks: dict[str, list[Callable[[InboxMessage], Any]]] = {}
         self._watches: dict[str, asyncio.Task] = {}

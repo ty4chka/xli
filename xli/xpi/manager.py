@@ -37,13 +37,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 from xli.xpi.base import XpiPlugin
 from xli.xpi.registry import XpiRegistry
 
 logger = StructuredLogger("xli.xpi.manager")
 
-XPI_DIR = Path.home() / ".xli" / "xpi"
+XPI_DIR = xli_path("xpi")
 
 #: Hooks the lifecycle knows about. A plugin may implement any subset.
 KNOWN_HOOKS = (

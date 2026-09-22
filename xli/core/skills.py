@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.skills")
@@ -16,8 +17,8 @@ logger = StructuredLogger("xli.skills")
 # override a bundled skill of the same name. Scanning only the user directory
 # (the original behaviour) left the index permanently empty.
 BUNDLED_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
-SKILLS_DIR = Path.home() / ".xli" / "skills"
-SKILLS_DB = Path.home() / ".xli" / "skills.db"
+SKILLS_DIR = xli_path("skills")
+SKILLS_DB = xli_path("skills.db")
 
 
 class SkillsManager:
