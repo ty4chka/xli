@@ -66,6 +66,19 @@ class MethodSpec:
         }
 
 
+def _is_binding_error(handler, params: dict[str, Any], exc: TypeError) -> bool:
+    """True when `exc` comes from binding `params` to `handler`, not its body.
+
+    Distinguishes "you sent arguments this handler does not take" from a
+    TypeError raised inside the handler. Only the former may be retried.
+    """
+    try:
+        inspect.signature(handler).bind(**params)
+    except TypeError:
+        return True          # the arguments genuinely do not fit
+    return False             # they fit, so the error came from the body
+
+
 class KernelServer:
     """Dispatches JSON-RPC frames to registered handlers."""
 
@@ -181,13 +194,36 @@ class KernelServer:
         return Response(id=req.id, result=result)
 
     async def _invoke(self, spec: MethodSpec, params: dict[str, Any]) -> Any:
-        """Call the handler; async generators are drained into notifications."""
+        """Call the handler; async generators are drained into notifications.
+
+        Handlers may be written either as `def h(name, args)` or as
+        `def h(params)`. Which one to use is decided by binding the arguments
+        first, not by catching TypeError from the call.
+
+        The old form was:
+
+            try:
+                outcome = handler(**params)
+            except TypeError:
+                outcome = handler(params)
+
+        That could not tell a bad call from a TypeError raised inside the
+        handler body, so a handler that failed after doing some work was run a
+        second time — a mutation performed twice, a file written twice. The
+        genuine error was then reported to the client as -32602 "invalid
+        params", pointing at the caller for a server-side fault. Every
+        registered handler is callable positionally, so all of them were
+        exposed. Binding first removes the ambiguity: a binding failure is the
+        only thing that triggers the positional form, and anything the body
+        raises propagates untouched.
+        """
         handler = spec.handler
         try:
+            inspect.signature(handler).bind(**params)
             outcome = handler(**params)
-        except TypeError:
-            # Fall back to a single positional dict so handlers may opt for
-            # `def h(params)` instead of keyword arguments.
+        except TypeError as exc:
+            if not _is_binding_error(handler, params, exc):
+                raise
             outcome = handler(params)
 
         if inspect.isasyncgen(outcome):

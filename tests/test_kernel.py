@@ -383,3 +383,124 @@ class TestTransports:
         assert socket_path("kernel").name == "kernel.sock"
         custom_dir = Path("/tmp/xli-test-runtime")
         assert socket_path("custom", runtime_dir=custom_dir) == custom_dir / "custom.sock"
+
+
+class TestHandlerIsNotRunTwice:
+    """A TypeError from a handler's body used to re-invoke it.
+
+    _invoke did:
+        try:    handler(**params)
+        except TypeError: handler(params)
+    which could not tell a bad call from a TypeError raised inside the handler.
+    A handler that failed after doing work was therefore run a second time, and
+    the real error was reported as -32602, blaming the caller. Every registered
+    handler is callable positionally, so all of them were exposed.
+    """
+
+    def test_a_body_typeerror_does_not_reinvoke_the_handler(self):
+        server = KernelServer()
+        calls = []
+
+        @server.method("mutating")
+        def mutating(a=1):
+            calls.append(a)
+            return None + 1  # TypeError from the body
+
+        out = asyncio.run(
+            server.feed_line(encode_line(Request(method="mutating", id=1, params={"a": 1})))
+        )
+        assert len(calls) == 1, f"handler ran {len(calls)} times; must run once"
+        assert out[0].error is not None
+
+    def test_the_positional_params_form_is_still_supported(self):
+        """The fallback exists for `def h(params)` handlers and must survive."""
+        server = KernelServer()
+
+        @server.method("positional")
+        def positional(params):
+            return {"got": params}
+
+        out = asyncio.run(
+            server.feed_line(encode_line(Request(method="positional", id=1, params={"x": 1})))
+        )
+        assert out[0].result == {"got": {"x": 1}}
+
+    def test_a_handler_taking_no_arguments_is_not_retried(self):
+        """The real kernel.clean case: zero-arg handler, caller sends params.
+
+        Neither form fits, so the call must fail once and say so, rather than
+        retrying into a second, differently-shaped failure.
+        """
+        server = KernelServer()
+        calls = []
+
+        @server.method("zero_args")
+        def zero_args():
+            calls.append(1)
+            return "ran"
+
+        out = asyncio.run(
+            server.feed_line(encode_line(Request(method="zero_args", id=1, params={"a": 1})))
+        )
+        assert out[0].error is not None
+        assert calls == [], "the body must not run when no form of the call fits"
+
+    def test_the_real_kernel_clean_rejects_unwanted_params_cleanly(self):
+        """kernel.clean takes no arguments; this is what the sweep found."""
+        from xli.kernel.methods import build_kernel
+
+        server = build_kernel()
+        out = asyncio.run(
+            server.feed_line(
+                encode_line(Request(method="kernel.clean", id=1, params={"dry_run": True}))
+            )
+        )
+        assert out[0].error is not None
+        assert "positional" in out[0].error["message"]
+
+
+class TestTypeErrorIsNotBlamedOnTheCaller:
+    """A broken handler is a server fault, not invalid params."""
+
+    def test_typeerror_maps_to_kernel_error(self):
+        from xli.kernel.protocol import KERNEL_ERROR
+
+        server = KernelServer()
+
+        @server.method("broken")
+        def broken():
+            return None + 1  # TypeError
+
+        out = asyncio.run(server.feed_line(encode_line(Request(method="broken", id=1, params={}))))
+        assert out[0].error["code"] == KERNEL_ERROR
+
+    def test_valueerror_still_maps_to_invalid_params(self):
+        """Handlers validate input with ValueError; that contract is unchanged."""
+        from xli.kernel.protocol import INVALID_PARAMS
+
+        server = KernelServer()
+
+        @server.method("validating")
+        def validating():
+            raise ValueError("bad value")
+
+        out = asyncio.run(
+            server.feed_line(encode_line(Request(method="validating", id=1, params={})))
+        )
+        assert out[0].error["code"] == INVALID_PARAMS
+
+    def test_missing_required_params_still_reports_invalid_params(self):
+        """The explicit required-params path is untouched by the mapping change."""
+        from xli.kernel.protocol import INVALID_PARAMS
+
+        server = KernelServer()
+
+        @server.method("needs.both", required=("a", "b"))
+        def needs_both(a, b):
+            return [a, b]
+
+        out = asyncio.run(
+            server.feed_line(encode_line(Request(method="needs.both", id=1, params={"a": 1})))
+        )
+        assert out[0].error["code"] == INVALID_PARAMS
+        assert "b" in out[0].error["message"]

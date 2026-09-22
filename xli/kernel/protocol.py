@@ -193,8 +193,15 @@ def error_response(req_id: int | str | None, exc: BaseException) -> Response:
         return Response(id=req_id, error={"code": PERMISSION_DENIED, "message": str(exc)})
     if isinstance(exc, KeyError):
         return Response(id=req_id, error={"code": METHOD_NOT_FOUND, "message": str(exc)})
-    if isinstance(exc, (TypeError, ValueError)):
+    if isinstance(exc, ValueError):
+        # Handlers validate their input by raising ValueError, so this one means
+        # the caller sent something unusable.
         return Response(id=req_id, error={"code": INVALID_PARAMS, "message": str(exc)})
+    # TypeError deliberately does NOT map to INVALID_PARAMS. Nothing in the
+    # kernel raises it for bad input; it means the handler itself is broken, and
+    # reporting that as the caller's fault sends whoever is debugging down the
+    # wrong path. Bad arguments are caught earlier, by the required-params check
+    # and by signature binding in _invoke.
     return Response(id=req_id, error={"code": KERNEL_ERROR, "message": f"{type(exc).__name__}: {exc}"})
 
 
