@@ -12,98 +12,92 @@ logger = StructuredLogger("xli.mcp.registry")
 SERVERS = {
     "knowledge": {
         "description": "Code knowledge base search",
-        "tools": ["search", "query"],
+        "tools": ["search_code"],
         "enabled": True,
     },
     "architecture": {
         "description": "Dependency graph and architecture analysis",
-        "tools": ["analyze_deps", "get_graph"],
+        "tools": ["dependency_graph", "circular_dependencies", "suggest_modules"],
         "enabled": True,
     },
     "debugger": {
         "description": "Debug and error analysis",
-        "tools": ["analyze_error", "suggest_fix"],
+        "tools": ["analyze_traceback"],
         "enabled": True,
     },
     "auto_tester": {
         "description": "Automated testing",
-        "tools": ["run_tests", "check_coverage"],
+        "tools": ["discover_tests", "run_tests", "fix_test"],
         "enabled": True,
     },
     "code_formatter": {
         "description": "Code formatting with black/ruff",
-        "tools": ["format", "lint"],
+        "tools": ["format_black", "lint_ruff", "type_check_mypy", "sort_imports"],
         "enabled": True,
     },
     "security_scanner": {
         "description": "Security vulnerability scanning",
-        "tools": ["scan", "check_dependencies"],
+        "tools": ["scan_bandit", "scan_safety", "scan_semgrep"],
         "enabled": True,
     },
     "file_manager": {
         "description": "File operations",
-        "tools": ["read", "write", "list", "grep"],
+        "tools": ["read_file", "write_file", "list_dir", "grep", "find"],
         "enabled": True,
     },
     "git_mcp": {
         "description": "Git operations",
-        "tools": ["status", "diff", "commit", "branch"],
+        "tools": ["git_status", "git_diff", "git_commit", "git_branch", "git_stash", "git_log"],
         "enabled": True,
     },
     "shell_helper": {
         "description": "Shell command assistance",
-        "tools": ["suggest", "validate"],
+        "tools": ["suggest_command", "fix_typo", "generate_complex_command"],
         "enabled": True,
     },
     "env_manager": {
         "description": "Environment variable management",
-        "tools": ["read", "write", "validate"],
+        "tools": ["read_env", "write_env", "validate_env", "list_env"],
         "enabled": True,
     },
     "db_client": {
         "description": "Database client",
-        "tools": ["query", "schema"],
+        "tools": ["query_sql", "get_schema", "list_tables"],
         "enabled": False,
     },
     "http_client": {
         "description": "HTTP client for API testing",
-        "tools": ["request", "test"],
+        "tools": ["http_request", "test_api", "curl_like"],
         "enabled": False,
     },
     "doc_generator": {
         "description": "Documentation generation",
-        "tools": ["generate", "build"],
+        "tools": ["generate_pdoc", "generate_sphinx", "generate_mkdocs"],
         "enabled": False,
     },
     "refactor": {
         "description": "Code refactoring",
-        "tools": ["suggest", "apply"],
+        "tools": ["analyze_complexity", "detect_long_methods"],
         "enabled": True,
     },
     "archaeologist": {
         "description": "Git history analysis",
-        "tools": ["blame", "history"],
+        "tools": ["blame_line", "code_ownership", "commit_history", "temporal_coupling"],
         "enabled": True,
     },
     "prompt": {
         "description": "Prompt management",
-        "tools": ["version", "optimize"],
+        "tools": ["prompt_create", "prompt_get", "prompt_list", "prompt_evaluate"],
         "enabled": True,
     },
     "package_monitor": {
         "description": "Package vulnerability monitoring",
-        "tools": ["check", "audit"],
+        "tools": ["list_dependencies", "check_vulnerabilities", "update_dependencies"],
         "enabled": True,
     },
     "lsp": {
-        # Referenced by XliAgent._get_mcp_tools_prompt() (chain.py) but had
-        # no entry here — is_enabled("lsp") was silently always False since
-        # MCPRegistry.is_enabled() treats a missing name as disabled, and no
-        # actual LSP integration exists in xli/skills/ yet. Registered here
-        # (disabled) so that's an explicit, documented fact instead of a
-        # lookup on a name that was never defined.
         "description": "Language server protocol (diagnostics, hover, goto) — not yet implemented",
-        "tools": ["diagnostics", "hover", "goto_definition"],
+        "tools": [],
         "enabled": False,
     },
 }
