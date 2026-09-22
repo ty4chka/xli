@@ -14,7 +14,16 @@ from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.time")
 
-SNAPSHOTS_DIR = xli_path("snapshots")
+def snapshots_dir() -> Path:
+    """Where snapshots live, resolved on every call.
+
+    This used to be a module-level constant, which froze the path at import
+    time. Setting XLI_CONFIG_DIR afterwards — as a test does, or as an embedder
+    might — was then silently ignored and snapshots were written to the real
+    ~/.xli/snapshots. Resolving per call also means the singleton can be pointed
+    somewhere else by resetting it.
+    """
+    return xli_path("snapshots")
 
 
 class TimeMachine:
@@ -33,8 +42,9 @@ class TimeMachine:
             return
         self._initialized = True
 
-        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-        self._index_file = SNAPSHOTS_DIR / "index.json"
+        self._dir = snapshots_dir()
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._index_file = self._dir / "index.json"
         self.snapshots: dict[str, dict] = self._load_index()
 
         logger.log_structured("INFO", "time",
@@ -64,7 +74,7 @@ class TimeMachine:
         if label:
             snapshot_id += f"_{label}"
 
-        snapshot_dir = SNAPSHOTS_DIR / snapshot_id
+        snapshot_dir = self._dir / snapshot_id
         snapshot_dir.mkdir(exist_ok=True)
 
         file_hashes = {}
@@ -102,7 +112,7 @@ class TimeMachine:
             logger.log_structured("ERROR", "time", f"Snapshot not found: {snapshot_id}")
             return False
 
-        snapshot_dir = SNAPSHOTS_DIR / snapshot_id
+        snapshot_dir = self._dir / snapshot_id
         if not snapshot_dir.exists():
             logger.log_structured("ERROR", "time", f"Snapshot dir missing: {snapshot_id}")
             return False
@@ -140,7 +150,7 @@ class TimeMachine:
         if snapshot_id not in self.snapshots:
             return "Snapshot not found"
 
-        snapshot_dir = SNAPSHOTS_DIR / snapshot_id
+        snapshot_dir = self._dir / snapshot_id
         old_file = snapshot_dir / Path(file_path).name
 
         if not old_file.exists():
@@ -195,7 +205,7 @@ class TimeMachine:
             return False
 
         try:
-            snapshot_dir = SNAPSHOTS_DIR / snapshot_id
+            snapshot_dir = self._dir / snapshot_id
             if snapshot_dir.exists():
                 shutil.rmtree(snapshot_dir)
 

@@ -482,6 +482,110 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    """Create, inspect and roll back file snapshots.
+
+    xli.core.time_machine already implemented this and nothing used it. An agent
+    that edits files with no way back is a poor default, so the capability is
+    exposed here rather than left dead. It is deliberately not automatic: taking
+    a snapshot on every edit would spend the user's disk without them asking.
+    """
+    from xli.core.time_machine import get_time_machine
+
+    machine = get_time_machine()
+    action = args.action
+
+    # One positional list, read according to the action, so that the natural
+    # spellings all work: `snapshot create a.txt b.txt`,
+    # `snapshot rollback <id>`, `snapshot diff <id> a.txt`. A single
+    # `path nargs="*"` argument cannot tell an id from a filename, and an
+    # --id-only design made the obvious invocation fail.
+    targets = list(args.targets or [])
+    snapshot_id = args.id
+    paths: list[str] = []
+    if action == "create":
+        paths = targets
+    elif action in {"rollback", "delete"}:
+        if snapshot_id is None and targets:
+            snapshot_id = targets[0]
+    elif action == "diff":
+        if snapshot_id is None and targets:
+            snapshot_id = targets[0]
+            targets = targets[1:]
+        paths = targets
+
+    if action == "list":
+        snapshots = machine.list_snapshots()
+        if args.json:
+            _emit(snapshots, True)
+            return EXIT_OK
+        if not snapshots:
+            print(STYLE.dim("  no snapshots"))
+            return EXIT_OK
+        for snap in snapshots:
+            print(
+                f"  {STYLE.bold(snap['id']):<40} "
+                f"{STYLE.dim(snap.get('created', '')[:19])}  "
+                f"{snap.get('files', 0)} file(s)  {snap.get('label', '')}"
+            )
+        return EXIT_OK
+
+    if action == "create":
+        if not paths:
+            print("usage: xli snapshot create <path> [path ...]", file=sys.stderr)
+            return EXIT_USAGE
+        missing = [pth for pth in paths if not Path(pth).exists()]
+        if missing:
+            print(f"not found: {', '.join(missing)}", file=sys.stderr)
+            return EXIT_USAGE
+        new_id = machine.snapshot(paths, args.label)
+        if args.json:
+            _emit({"id": new_id, "files": len(paths)}, True)
+        else:
+            print(f"  {STYLE.green('snapshot')} {STYLE.bold(new_id)}")
+        return EXIT_OK
+
+    if action == "rollback":
+        if not snapshot_id:
+            print("usage: xli snapshot rollback <id>", file=sys.stderr)
+            return EXIT_USAGE
+        if not machine.rollback(snapshot_id):
+            print(f"no such snapshot: {snapshot_id}", file=sys.stderr)
+            return EXIT_FAILED
+        if args.json:
+            _emit({"rolled_back": snapshot_id}, True)
+        else:
+            print(f"  {STYLE.green('rolled back')} {snapshot_id}")
+        return EXIT_OK
+
+    if action == "diff":
+        if not snapshot_id or not paths:
+            print("usage: xli snapshot diff <id> <path>", file=sys.stderr)
+            return EXIT_USAGE
+        text = machine.diff_snapshot(snapshot_id, paths[0])
+        if args.json:
+            _emit({"id": snapshot_id, "diff": text}, True)
+        else:
+            print(text)
+        return EXIT_OK
+
+    if action == "delete":
+        if not snapshot_id:
+            print("usage: xli snapshot delete <id>", file=sys.stderr)
+            return EXIT_USAGE
+        if not machine.delete_snapshot(snapshot_id):
+            print(f"no such snapshot: {snapshot_id}", file=sys.stderr)
+            return EXIT_FAILED
+        if args.json:
+            _emit({"deleted": snapshot_id}, True)
+        else:
+            print(f"  {STYLE.green('deleted')} {snapshot_id}")
+        return EXIT_OK
+
+    print(f"unknown action: {action}", file=sys.stderr)
+    return EXIT_USAGE
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Report what works. Exit non-zero if something the user needs is broken."""
     checks: list[dict[str, Any]] = []
@@ -865,6 +969,18 @@ def build_parser() -> argparse.ArgumentParser:
     nvim.set_defaults(func=cmd_nvim)
 
     # --- recommend
+    snapshot = sub.add_parser("snapshot", help="create, inspect and roll back file snapshots")
+    snapshot.add_argument("action", choices=["list", "create", "rollback", "diff", "delete"])
+    snapshot.add_argument(
+        "targets",
+        nargs="*",
+        help="create: file(s); rollback/delete: <id>; diff: <id> <path>",
+    )
+    snapshot.add_argument("--id", help="snapshot id (alternative to passing it positionally)")
+    snapshot.add_argument("--label", help="label for a new snapshot")
+    snapshot.add_argument("--json", action="store_true")
+    snapshot.set_defaults(func=cmd_snapshot)
+
     recommend = sub.add_parser("recommend", help="suggest MCP servers and skills for a task")
     recommend.add_argument("task", nargs="*", help="what you are about to do")
     recommend.add_argument("--agent", default="coder", help="role to tailor skills for")

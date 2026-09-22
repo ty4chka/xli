@@ -65,7 +65,11 @@ class TestResolver:
 
 
 class TestEveryPathHonoursTheOverride:
-    """Checked in a subprocess: these are module-level constants, resolved at import."""
+    """Checked in a subprocess, so each path resolves in a fresh interpreter.
+
+    Most of these are module-level constants, frozen at import; snapshots_dir()
+    is a function, which is why the probe calls whatever is callable.
+    """
 
     MODULE_ATTRS = [
         ("xli.core.cache", "CACHE_DB"),
@@ -74,7 +78,7 @@ class TestEveryPathHonoursTheOverride:
         ("xli.core.skills", "SKILLS_DIR"),
         ("xli.core.prompt_lab", "PROMPT_DIR"),
         ("xli.core.queue", "QUEUE_DIR"),
-        ("xli.core.time_machine", "SNAPSHOTS_DIR"),
+        ("xli.core.time_machine", "snapshots_dir"),
         ("xli.xpi.state", "STATE_FILE"),
         ("xli.xpi.manager", "XPI_DIR"),
         ("xli.mcp.manager", "XPI_DIR"),
@@ -87,11 +91,14 @@ class TestEveryPathHonoursTheOverride:
         env[ENV_VAR] = str(tmp_path)
         env["PYTHONPATH"] = str(importlib.import_module("xli").__path__[0].rsplit("/xli", 1)[0])
 
+        # Real newlines: `def` cannot be joined onto one line with semicolons.
         probe = (
-            "import importlib, json;"
-            "pairs = " + repr(self.MODULE_ATTRS) + ";"
-            "print(json.dumps({"
-            "  f'{m}.{a}': str(getattr(importlib.import_module(m), a)) for m, a in pairs}))"
+            "import importlib, json\n"
+            "pairs = " + repr(self.MODULE_ATTRS) + "\n"
+            "def resolve(m, a):\n"
+            "    v = getattr(importlib.import_module(m), a)\n"
+            "    return str(v() if callable(v) else v)\n"
+            "print(json.dumps({f'{m}.{a}': resolve(m, a) for m, a in pairs}))\n"
         )
         out = subprocess.run(
             [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120, env=env

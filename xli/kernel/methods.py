@@ -336,6 +336,54 @@ def build_kernel(
         info = registry.get_server(name)
         return {"name": name, "enabled": bool(info and info.get("enabled"))}
 
+    # --------------------------------------------------------------- snapshot
+    @server.method("snapshot.list", doc="File snapshots, newest first.")
+    def snapshot_list():
+        from xli.core.time_machine import get_time_machine
+
+        return {"snapshots": get_time_machine().list_snapshots()}
+
+    @server.method(
+        "snapshot.create",
+        required=("paths",),
+        doc="Snapshot files before editing them.",
+    )
+    def snapshot_create(paths: list[str], label: str | None = None):
+        from xli.core.time_machine import get_time_machine
+
+        if isinstance(paths, str):
+            paths = [paths]
+        if not paths:
+            raise ValueError("paths must not be empty")
+        return {
+            "id": get_time_machine().snapshot([str(p) for p in paths], label),
+            "files": len(paths),
+        }
+
+    @server.method("snapshot.rollback", required=("id",), doc="Restore files from a snapshot.")
+    def snapshot_rollback(id: str):
+        from xli.core.time_machine import get_time_machine
+
+        if not get_time_machine().rollback(id):
+            raise ValueError(f"no such snapshot: {id}")
+        return {"rolled_back": id}
+
+    @server.method(
+        "snapshot.diff", required=("id", "path"), doc="Diff one file against a snapshot."
+    )
+    def snapshot_diff(id: str, path: str):
+        from xli.core.time_machine import get_time_machine
+
+        return {"id": id, "path": path, "diff": get_time_machine().diff_snapshot(id, str(path))}
+
+    @server.method("snapshot.delete", required=("id",), doc="Discard a snapshot.")
+    def snapshot_delete(id: str):
+        from xli.core.time_machine import get_time_machine
+
+        if not get_time_machine().delete_snapshot(id):
+            raise ValueError(f"no such snapshot: {id}")
+        return {"deleted": id}
+
     # ----------------------------------------------------------------- doctor
     @server.method("doctor", doc="Environment report.")
     def doctor():
