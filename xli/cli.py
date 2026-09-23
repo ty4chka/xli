@@ -86,8 +86,79 @@ class Style:
     def red(self, text: str) -> str:
         return self._wrap("31", text)
 
+    def blue(self, text: str) -> str:
+        return self._wrap("34", text)
+
+    def magenta(self, text: str) -> str:
+        return self._wrap("35", text)
+
+    def reverse(self, text: str) -> str:
+        return self._wrap("7", text)
+
+    def underline(self, text: str) -> str:
+        return self._wrap("4", text)
+
+    def strike(self, text: str) -> str:
+        return self._wrap("9", text)
+
 
 STYLE = Style()
+
+
+# Markdown span styles, mapped to the same vocabulary the TUI's curses palette
+# uses, so one renderer drives both front ends.
+_ANSI_FOR_STYLE = {
+    "normal": None,
+    "dim": "2",
+    "bold": "1",
+    "accent": "36",
+    "good": "32",
+    "warn": "33",
+    "bad": "31",
+    "heading": "1;94",
+    "code": "7",
+    "quote": "3;90",
+    "link": "4;36",
+    "italic": "3",
+    "strike": "9",
+}
+
+
+def render_markdown_ansi(markdown: str, width: int | None = None) -> str:
+    """Markdown as ANSI-coloured text for the CLI.
+
+    Uses the same parser as the TUI, so the two never drift apart in what they
+    consider a heading or a list. Falls back to plain text when stdout is not a
+    terminal or NO_COLOR is set.
+    """
+    from xli.ui.markdown import render_rows
+
+    if width is None:
+        width = _terminal_width()
+
+    rows = render_rows(markdown, width)
+    if not STYLE.enabled:
+        return "\n".join("".join(t for t, _ in row).rstrip() for row in rows)
+
+    out: list[str] = []
+    for row in rows:
+        parts: list[str] = []
+        for text, style in row:
+            code = _ANSI_FOR_STYLE.get(style)
+            parts.append(f"\033[{code}m{text}\033[0m" if code else text)
+        out.append("".join(parts).rstrip())
+    return "\n".join(out)
+
+
+def _terminal_width(default: int = 80) -> int:
+    """Usable width, from COLUMNS or the tty, never wider than the terminal."""
+    raw = os.environ.get("COLUMNS")
+    if raw and raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    try:
+        return max(20, os.get_terminal_size(sys.stdout.fileno()).columns)
+    except (OSError, ValueError, AttributeError):
+        return default
 
 
 # --------------------------------------------------------------------- wiring
@@ -220,7 +291,10 @@ def _render_event(kind: str, payload: dict[str, Any]) -> None:
     if kind == "assistant":
         text = payload.get("text", "").strip()
         if text:
-            print(STYLE.cyan("xli ") + text)
+            # Rendered through the same markdown parser the TUI uses, so a
+            # heading or a code fence looks like one in both front ends.
+            print(STYLE.cyan("xli "))
+            print(render_markdown_ansi(text))
     elif kind == "tool_call":
         args_text = json.dumps(payload.get("args", {}), ensure_ascii=False)
         if len(args_text) > 120:

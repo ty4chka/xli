@@ -3,7 +3,7 @@
 
 Two front ends need this and neither should own it: the TUI paints styled spans
 into curses, and the CLI prints ANSI to stdout. So this module produces neither
-— it produces the same (text, style) spans the TUI already uses, and a separate
+-- it produces the same (text, style) spans the TUI already uses, and a separate
 function in `xli/cli.py` turns those into ANSI. One parser, two painters.
 
 It is deliberately a small hand-written parser rather than a dependency. The
@@ -11,10 +11,12 @@ alternative is `rich`, which is an optional extra under `[tui]`; making the CLI
 depend on it would mean `xli run` stopped working on a bare install, which is
 the exact failure `_http.py` was written to fix.
 
-Supported: headings, fenced code (with a language tag), bullet/numbered lists,
-block quotes, horizontal rules, tables, and inline bold/italic/code/links.
-Anything unrecognised is passed through as plain text, so a malformed document
-degrades to readable prose instead of raising.
+Supported: ATX and setext headings, fenced code with a language tag, bullet /
+numbered / task lists, block quotes, horizontal rules, tables, and inline bold,
+italic, strikethrough, code, links and autolinks. Emphasis nests. Anything
+unrecognised passes through as plain text, so a malformed document degrades to
+readable prose instead of raising -- the agent is cut off mid-code fence often
+enough that this is a normal case, not an edge case.
 """
 
 from __future__ import annotations
@@ -23,8 +25,9 @@ import re
 from dataclasses import dataclass, field
 
 Span = tuple[str, str]
+Row = list[Span]
 
-# Style names. These are the TUI's vocabulary; the ANSI painter maps them.
+# Style names. These are the TUI's vocabulary; the ANSI painter maps them too.
 NORMAL = "normal"
 DIM = "dim"
 BOLD = "bold"
@@ -36,29 +39,48 @@ CODE = "code"
 QUOTE = "quote"
 HEADING = "heading"
 LINK = "link"
+ITALIC = "italic"
+STRIKE = "strike"
 
 
 @dataclass
 class Block:
     """One markdown block, already split from its neighbours."""
 
-    kind: str                      # paragraph, heading, code, list, quote, rule, table
+    kind: str                       # paragraph, heading, code, list, quote, rule, table
     text: str = ""
-    level: int = 0                 # heading level, or list indent
-    language: str = ""             # code fence language
-    items: list[str] = field(default_factory=list)
+    level: int = 0                  # heading level, or list indent
+    language: str = ""              # code fence language
+    items: list[dict] = field(default_factory=list)
     ordered: bool = False
     rows: list[list[str]] = field(default_factory=list)
+    header: bool = False            # table: first row is a header
+    inline: list[Span] = field(default_factory=list)
+
+    # Convenience aliases, so callers do not have to know the storage layout.
+    @property
+    def lang(self) -> str:
+        return self.language
+
+    @property
+    def lines(self) -> list[str]:
+        return self.text.split("\n") if self.text else []
 
 
 _FENCE = re.compile(r"^(\s*)(```+|~~~+)\s*([A-Za-z0-9_+#.-]*)\s*$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+_SETEXT_H1 = re.compile(r"^=+\s*$")
+_SETEXT_H2 = re.compile(r"^-+\s*$")
 _BULLET = re.compile(r"^(\s*)([-*+])\s+(.*)$")
 _ORDERED = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
+_TASK = re.compile(r"^\[([ xX])\]\s+(.*)$")
 _QUOTE = re.compile(r"^\s*>\s?(.*)$")
 _RULE = re.compile(r"^\s{0,3}([-*_])\s*(?:\1\s*){2,}$")
 _TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
-_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$")
+# GFM allows a single dash per column, so `| - | - |` is a valid separator.
+# One column is legal too: `| --- |` separates a single-column table.
+_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$")
+_AUTOLINK = re.compile(r"https?://[^\s<>)\]]+", re.IGNORECASE)
 
 
 def parse(markdown: str) -> list[Block]:
@@ -79,6 +101,9 @@ def parse(markdown: str) -> list[Block]:
             index += 1
             while index < len(lines):
                 closing = _FENCE.match(lines[index])
+                # An unterminated fence runs to the end of the document; the
+                # agent is cut off mid-block often enough that losing the tail
+                # would hide exactly the code the user is asking about.
                 if closing and closing.group(2)[0] == marker[0]:
                     index += 1
                     break
@@ -87,32 +112,66 @@ def parse(markdown: str) -> list[Block]:
             blocks.append(Block(kind="code", text="\n".join(body), language=language))
             continue
 
-        # ---- heading ----------------------------------------------------
+        # ---- ATX heading -------------------------------------------------
         heading = _HEADING.match(line)
         if heading:
+            text = heading.group(2).strip()
             blocks.append(
-                Block(kind="heading", text=heading.group(2).strip(), level=len(heading.group(1)))
+                Block(
+                    kind="heading",
+                    text=text,
+                    level=len(heading.group(1)),
+                    inline=inline_spans(text),
+                )
             )
             index += 1
             continue
 
-        # ---- horizontal rule --------------------------------------------
-        if _RULE.match(line):
+        # ---- horizontal rule ---------------------------------------------
+        # Checked before setext, because `---` alone is a rule but `---` under
+        # a line of text is a level-2 heading.
+        if _RULE.match(line) and not (index and lines[index - 1].strip()):
             blocks.append(Block(kind="rule"))
             index += 1
             continue
 
-        # ---- table ------------------------------------------------------
-        if _TABLE_ROW.match(line) and index + 1 < len(lines) and _TABLE_SEP.match(lines[index + 1]):
+        # ---- setext heading -----------------------------------------------
+        if (
+            line.strip()
+            and index + 1 < len(lines)
+            and (_SETEXT_H1.match(lines[index + 1]) or _SETEXT_H2.match(lines[index + 1]))
+            and not _FENCE.match(line)
+            and not _QUOTE.match(line)
+            and not _BULLET.match(line)
+            and not _ORDERED.match(line)
+        ):
+            level = 1 if _SETEXT_H1.match(lines[index + 1]) else 2
+            text = line.strip()
+            blocks.append(
+                Block(kind="heading", text=text, level=level, inline=inline_spans(text))
+            )
+            index += 2
+            continue
+
+        # ---- table ---------------------------------------------------------
+        if (
+            _TABLE_ROW.match(line)
+            and index + 1 < len(lines)
+            and _TABLE_SEP.match(lines[index + 1])
+        ):
             rows = [_split_row(line)]
             index += 2
             while index < len(lines) and _TABLE_ROW.match(lines[index]):
                 rows.append(_split_row(lines[index]))
                 index += 1
-            blocks.append(Block(kind="table", rows=rows))
+            # Ragged rows are common in generated tables; even them out so the
+            # renderer does not have to guess.
+            columns = max(len(row) for row in rows)
+            rows = [row + [""] * (columns - len(row)) for row in rows]
+            blocks.append(Block(kind="table", rows=rows, header=True))
             continue
 
-        # ---- block quote -------------------------------------------------
+        # ---- block quote ----------------------------------------------------
         quote = _QUOTE.match(line)
         if quote:
             body = [quote.group(1)]
@@ -123,42 +182,41 @@ def parse(markdown: str) -> list[Block]:
                     break
                 body.append(more.group(1))
                 index += 1
-            blocks.append(Block(kind="quote", text="\n".join(body)))
+            text = "\n".join(body)
+            blocks.append(Block(kind="quote", text=text, inline=inline_spans(text)))
             continue
 
-        # ---- list ---------------------------------------------------------
+        # ---- list -------------------------------------------------------------
         bullet = _BULLET.match(line)
         ordered = _ORDERED.match(line)
         if bullet or ordered:
             match = bullet or ordered
-            items = [match.group(3)]
-            indent = len(match.group(1))
             is_ordered = bool(ordered)
+            indent = len(match.group(1))
+            items = [_make_item(match, is_ordered)]
             index += 1
             while index < len(lines):
                 more = _BULLET.match(lines[index]) or _ORDERED.match(lines[index])
                 if not more:
                     # A continuation line belongs to the previous item.
                     if lines[index].strip() and lines[index].startswith(" " * (indent + 1)):
-                        items[-1] += " " + lines[index].strip()
+                        items[-1]["text"] += " " + lines[index].strip()
                         index += 1
                         continue
                     break
                 if bool(_ORDERED.match(lines[index])) != is_ordered:
                     break
-                items.append(more.group(3))
+                items.append(_make_item(more, is_ordered))
                 index += 1
-            blocks.append(
-                Block(kind="list", items=items, ordered=is_ordered, level=indent)
-            )
+            blocks.append(Block(kind="list", items=items, ordered=is_ordered, level=indent))
             continue
 
-        # ---- blank ---------------------------------------------------------
+        # ---- blank -------------------------------------------------------------
         if not line.strip():
             index += 1
             continue
 
-        # ---- paragraph ------------------------------------------------------
+        # ---- paragraph -----------------------------------------------------------
         body = [line]
         index += 1
         while index < len(lines):
@@ -167,6 +225,8 @@ def parse(markdown: str) -> list[Block]:
                 not nxt.strip()
                 or _FENCE.match(nxt)
                 or _HEADING.match(nxt)
+                or _SETEXT_H1.match(nxt)
+                or _SETEXT_H2.match(nxt)
                 or _RULE.match(nxt)
                 or _BULLET.match(nxt)
                 or _ORDERED.match(nxt)
@@ -176,9 +236,29 @@ def parse(markdown: str) -> list[Block]:
                 break
             body.append(nxt)
             index += 1
-        blocks.append(Block(kind="paragraph", text=" ".join(s.strip() for s in body)))
+        text = " ".join(s.strip() for s in body)
+        blocks.append(Block(kind="paragraph", text=text, inline=inline_spans(text)))
 
     return blocks
+
+
+def _make_item(match: re.Match, is_ordered: bool) -> dict:
+    """One list item, with its marker state pulled apart."""
+    raw = match.group(3)
+    task = _TASK.match(raw)
+    if task:
+        return {
+            "text": task.group(2),
+            "number": int(match.group(2)) if is_ordered else 0,
+            "checked": task.group(1).lower() == "x",
+            "task": True,
+        }
+    return {
+        "text": raw,
+        "number": int(match.group(2)) if is_ordered else 0,
+        "checked": False,
+        "task": False,
+    }
 
 
 def _split_row(line: str) -> list[str]:
@@ -187,48 +267,143 @@ def _split_row(line: str) -> list[str]:
 
 
 # ---------------------------------------------------------------- inline spans
-_INLINE = re.compile(
-    r"""
-      (`+)(?P<code>.+?)\1                      # `code`
-    | \*\*\*(?P<bi>.+?)\*\*\*                  # ***bold italic***
-    | \*\*(?P<bold>.+?)\*\*                    # **bold**
-    | (?P<italic>\*(?!\s)(?:[^*]|\*\*)+?\*)     # *italic*
-    | __(?P<ubold>.+?)__                       # __bold__
-    | \[(?P<link>[^\]]*)\]\((?P<url>[^)]*)\)   # [text](url)
-    """,
-    re.VERBOSE,
+# Marker length matters: longer markers are tried first so `***x***` is not
+# read as `*` wrapping `**x**`.
+_EMPHASIS = (
+    ("***", BOLD),
+    ("___", BOLD),
+    ("**", BOLD),
+    ("__", BOLD),
+    ("~~", STRIKE),
+    ("*", ITALIC),
+    ("_", ITALIC),
 )
 
+_MAX_DEPTH = 6
 
-def inline_spans(text: str, base: str = NORMAL) -> list[Span]:
-    """Turn inline markdown into styled spans, leaving prose untouched."""
+
+def inline_spans(text: str, base: str = NORMAL, *, _depth: int = 0) -> list[Span]:
+    """Turn inline markdown into styled spans, leaving prose untouched.
+
+    Recursive, so emphasis nests: `*a **b** c*` yields italic around bold.
+    Unmatched markers stay literal, because `2 * 3 * 4` is arithmetic more
+    often than it is emphasis.
+    """
     if not text:
         return []
+    if _depth > _MAX_DEPTH:
+        return [(text, base)]
+
     out: list[Span] = []
-    position = 0
+    buffer: list[str] = []
+    index = 0
+    length = len(text)
 
-    for match in _INLINE.finditer(text):
-        if match.start() > position:
-            out.append((text[position : match.start()], base))
+    def flush() -> None:
+        if buffer:
+            out.append(("".join(buffer), base))
+            buffer.clear()
 
-        if match.group("code") is not None:
-            out.append((match.group("code"), CODE))
-        elif match.group("bi") is not None:
-            out.append((match.group("bi"), BOLD))
-        elif match.group("bold") is not None:
-            out.append((match.group("bold"), BOLD))
-        elif match.group("ubold") is not None:
-            out.append((match.group("ubold"), BOLD))
-        elif match.group("italic") is not None:
-            out.append((match.group("italic")[1:-1], ACCENT))
-        elif match.group("link") is not None:
-            label = match.group("link") or match.group("url")
-            out.append((label, LINK))
-        position = match.end()
+    while index < length:
+        char = text[index]
 
-    if position < len(text):
-        out.append((text[position:], base))
+        # ---- code span: highest priority, nothing nests inside it
+        if char == "`":
+            match = re.match(r"(`+)(.+?)\1", text[index:], re.DOTALL)
+            if match:
+                flush()
+                out.append((match.group(2), CODE))
+                index += match.end()
+                continue
+
+        # ---- explicit link [label](url)
+        if char == "[":
+            match = re.match(r"\[([^\]]*)\]\(([^)\s]*)\)", text[index:])
+            if match:
+                flush()
+                label = match.group(1) or match.group(2)
+                out.append((label, LINK))
+                index += match.end()
+                continue
+
+        # ---- autolink <https://...>
+        if char == "<":
+            match = re.match(r"<((?:https?|ftp)://[^>\s]+)>", text[index:])
+            if match:
+                flush()
+                out.append((match.group(1), LINK))
+                index += match.end()
+                continue
+
+        # ---- bare autolink
+        if char in "hH" and text[index : index + 4].lower() == "http":
+            previous = text[index - 1] if index else ""
+            if not (previous.isalnum() or previous in "/_-"):
+                match = _AUTOLINK.match(text, index)
+                if match:
+                    flush()
+                    out.append((match.group(0).rstrip(".,;:"), LINK))
+                    index += len(match.group(0).rstrip(".,;:"))
+                    continue
+
+        # ---- emphasis
+        matched = False
+        for marker, style in _EMPHASIS:
+            if not text.startswith(marker, index):
+                continue
+            after = index + len(marker)
+            # An opener cannot be followed by whitespace.
+            if after >= length or text[after].isspace():
+                continue
+            # `_` does not open emphasis inside a word, so snake_case survives.
+            if marker[0] == "_" and index and (text[index - 1].isalnum()):
+                continue
+            close = _find_close(text, after, marker)
+            if close < 0:
+                continue
+            inner = text[after:close]
+            if not inner.strip():
+                continue
+            flush()
+            out.extend(inline_spans(inner, style, _depth=_depth + 1))
+            index = close + len(marker)
+            matched = True
+            break
+        if matched:
+            continue
+
+        buffer.append(char)
+        index += 1
+
+    flush()
     return [span for span in out if span[0]]
+
+
+def _find_close(text: str, start: int, marker: str) -> int:
+    """Index of the delimiter that closes `marker`, or -1.
+
+    The run length has to match exactly, so the `**` inside `*a **b** c*` is
+    recognised as a nested delimiter rather than as the closing `*`. A closing
+    delimiter also cannot be preceded by whitespace.
+    """
+    index = start
+    length = len(text)
+    size = len(marker)
+    char = marker[0]
+
+    while index < length:
+        if text[index] == char:
+            run = 0
+            cursor = index
+            while cursor < length and text[cursor] == char:
+                run += 1
+                cursor += 1
+            if run == size and not (index and text[index - 1].isspace()):
+                return index
+            index = cursor
+            continue
+        index += 1
+    return -1
 
 
 def strip_inline(text: str) -> str:
@@ -237,112 +412,150 @@ def strip_inline(text: str) -> str:
 
 
 # ------------------------------------------------------------------- rendering
-def render_rows(markdown: str, width: int, *, indent: int = 0) -> list[list[Span]]:
+def render_rows(markdown: str, width: int, *, indent: int = 0) -> list[Row]:
     """Render markdown to rows of spans, wrapped to `width`.
 
-    Returns the same row shape the TUI paints, so the two stay in step.
+    Returns the same row shape the TUI paints, so the two stay in step. Every
+    row is guaranteed to fit inside `width` cells.
     """
     from xli.ui.text import display_width
 
-    rows: list[list[Span]] = []
+    if width <= 0:
+        return []
+
+    rows: list[Row] = []
     gutter = " " * indent
-    body_width = max(10, width - indent)
+    body_width = max(1, width - indent)
+
+    def emit(row: Row) -> None:
+        rows.append(_clamp(row, width))
 
     for block in parse(markdown):
         if block.kind == "heading":
             prefix = "▌" if block.level <= 2 else "▐"
-            rows.append(_wrap_spans(
-                [(f"{gutter}{prefix} ", ACCENT)]
-                + [(t, HEADING) for t, _ in inline_spans(block.text)],
-                body_width,
-            ))
+            spans: Row = [(f"{gutter}{prefix} ", ACCENT)]
+            spans += [(t, HEADING) for t, _ in (block.inline or inline_spans(block.text))]
+            for row in wrap_row(spans, width):
+                emit(row)
 
         elif block.kind == "code":
-            if block.language:
-                rows.append([(f"{gutter}┌─ {block.language} ", DIM), ("─" * 3, DIM)])
-            else:
-                rows.append([(f"{gutter}┌", DIM), ("─" * 3, DIM)])
-            for line in (block.text.split("\n") if block.text else [""]):
-                rows.append([(f"{gutter}│ ", DIM), (line, CODE)])
-            rows.append([(f"{gutter}└", DIM), ("─" * 3, DIM)])
+            label = f"─ {block.language} " if block.language else ""
+            head = f"{gutter}┌{label}"
+            fill = max(3, min(24, body_width - display_width(head)))
+            emit([(head + "─" * fill, DIM)])
+            for line in (block.lines or [""]):
+                emit([(f"{gutter}│ ", DIM), (line, CODE)])
+            emit([(f"{gutter}└" + "─" * max(3, min(24, body_width - 1)), DIM)])
 
         elif block.kind == "list":
             for number, item in enumerate(block.items, start=1):
-                marker = f"{number}." if block.ordered else "•"
-                rows.append(_wrap_spans(
-                    [(f"{gutter}  {marker} ", ACCENT)] + inline_spans(item),
-                    body_width,
-                    hang=len(marker) + 3,
-                ))
+                if item.get("task"):
+                    marker = "[x]" if item.get("checked") else "[ ]"
+                elif block.ordered:
+                    marker = f"{item.get('number') or number}."
+                else:
+                    marker = "•"
+                lead = f"{gutter}  {marker} "
+                for row in wrap_row(
+                    [(lead, ACCENT)] + inline_spans(item["text"]),
+                    width,
+                    hang=display_width(lead),
+                ):
+                    emit(row)
 
         elif block.kind == "quote":
             for line in block.text.split("\n"):
-                rows.append(_wrap_spans(
-                    [(f"{gutter}▎ ", DIM)] + inline_spans(line, QUOTE), body_width
-                ))
+                lead = f"{gutter}▎ "
+                for row in wrap_row(
+                    [(lead, DIM)] + inline_spans(line, QUOTE), width, hang=display_width(lead)
+                ):
+                    emit(row)
 
         elif block.kind == "rule":
-            rows.append([(gutter + "─" * min(body_width, 40), DIM)])
+            emit([(gutter + "─" * min(body_width, 40), DIM)])
 
         elif block.kind == "table":
-            rows.extend(_render_table(block.rows, body_width, gutter))
+            for row in _render_table(block.rows, width, gutter):
+                emit(row)
 
         else:  # paragraph
-            rows.append(_wrap_spans(gutter_spans(gutter) + inline_spans(block.text), body_width))
+            spans = ([(gutter, NORMAL)] if gutter else []) + (
+                block.inline or inline_spans(block.text)
+            )
+            for row in wrap_row(spans, width, hang=indent):
+                emit(row)
 
     return rows
 
 
-def gutter_spans(gutter: str) -> list[Span]:
-    return [(gutter, NORMAL)] if gutter else []
-
-
-def _render_table(rows: list[list[str]], width: int, gutter: str) -> list[list[Span]]:
+def _clamp(row: Row, width: int) -> Row:
+    """Last-resort guard: no row may exceed `width` cells."""
     from xli.ui.text import display_width, truncate
+
+    total = display_width("".join(t for t, _ in row))
+    if total <= width:
+        return row
+    overflow = total - width
+    out: list[Span] = []
+    for text, style in reversed(row):
+        if overflow <= 0:
+            out.append((text, style))
+            continue
+        keep = max(0, display_width(text) - overflow)
+        overflow -= display_width(text) - keep
+        if keep:
+            out.append((truncate(text, keep), style))
+    return list(reversed(out))
+
+
+def _render_table(rows: list[list[str]], width: int, gutter: str) -> list[Row]:
+    from xli.ui.text import display_width, pad, truncate
 
     if not rows:
         return []
     columns = max(len(row) for row in rows)
     rows = [row + [""] * (columns - len(row)) for row in rows]
 
-    # Give every column its widest cell, then shrink to fit if needed.
-    widths = [
+    gutter_width = display_width(gutter)
+    # Each column costs its content plus " │ " on both sides, plus one edge.
+    overhead = columns * 3 + 1
+    available = max(columns, width - gutter_width - overhead)
+
+    natural = [
         max(display_width(strip_inline(row[i])) for row in rows) for i in range(columns)
     ]
-    overhead = columns * 3 + 1
-    available = max(columns, width - len(gutter) - overhead)
-    if sum(widths) > available:
-        scale = available / sum(widths)
-        widths = [max(3, int(w * scale)) for w in widths]
+    total = sum(natural) or 1
+    if total > available:
+        widths = [max(3, int(w * available / total)) for w in natural]
+    else:
+        widths = natural
 
-    out: list[list[Span]] = []
+    def border(left: str, mid: str, right: str) -> Row:
+        return [(gutter + left + mid.join("─" * (w + 2) for w in widths) + right, DIM)]
+
+    out: list[Row] = [border("┌", "┬", "┐")]
     for position, row in enumerate(rows):
-        cells: list[Span] = [(f"{gutter}│ ", DIM)]
+        cells: Row = [(f"{gutter}│ ", DIM)]
         for index, cell in enumerate(row):
             text = truncate(strip_inline(cell), widths[index])
-            cells.append((text.ljust(widths[index]), BOLD if position == 0 else NORMAL))
+            cells.append((pad(text, widths[index]), BOLD if position == 0 else NORMAL))
             cells.append((" │ ", DIM))
         out.append(cells)
         if position == 0:
-            line = "├" + "┼".join("─" * (w + 2) for w in widths) + "┤"
-            out.append([(gutter + line, DIM)])
+            out.append(border("├", "┼", "┤"))
+    out.append(border("└", "┴", "┘"))
     return out
 
 
-def _wrap_spans(spans: list[Span], width: int, *, hang: int = 0) -> list[Span]:
-    """Join spans into a single row; the caller's painter handles the wrap."""
-    return list(spans)
-
-
-def wrap_row(row: list[Span], width: int, *, hang: int = 0) -> list[list[Span]]:
+def wrap_row(row: Row, width: int, *, hang: int = 0) -> list[Row]:
     """Word-wrap a span row to `width` cells, preserving each span's style."""
     from xli.ui.text import char_width, display_width
 
     if width <= 0:
         return [[]]
 
-    out: list[list[Span]] = []
-    current: list[Span] = []
+    out: list[Row] = []
+    current: Row = []
     used = 0
     continuation = " " * hang
 
@@ -351,26 +564,29 @@ def wrap_row(row: list[Span], width: int, *, hang: int = 0) -> list[list[Span]]:
         out.append(current)
         current, used = [], 0
 
+    def start_continuation() -> None:
+        nonlocal used
+        if hang:
+            current.append((continuation, NORMAL))
+            used = hang
+
     for text, style in row:
         for line in text.split("\n"):
             if line != text.split("\n")[0]:
                 flush()
-                if hang:
-                    current.append((continuation, NORMAL))
-                    used = hang
+                start_continuation()
             for word in _words(line):
                 word_width = display_width(word)
                 if word == " " and not current:
                     continue
                 if used + word_width > width and current:
                     flush()
-                    if hang:
-                        current.append((continuation, NORMAL))
-                        used = hang
+                    start_continuation()
                     if word == " ":
                         continue
-                # A single word wider than the line has to be split by cells.
-                if word_width > width - (hang if not current else 0):
+                # A single word wider than the line is split by cells, so a
+                # long path or a CJK run still respects the frame.
+                if word_width > width - (0 if current else hang):
                     for char in word:
                         step = char_width(char)
                         if step == 0:
@@ -378,9 +594,7 @@ def wrap_row(row: list[Span], width: int, *, hang: int = 0) -> list[list[Span]]:
                             continue
                         if used + step > width and current:
                             flush()
-                            if hang:
-                                current.append((continuation, NORMAL))
-                                used = hang
+                            start_continuation()
                         current.append((char, style))
                         used += step
                     continue

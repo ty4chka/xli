@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from xli.ui.markdown import inline_spans, render_rows as md_rows, wrap_row
+from xli.ui.markdown import render_rows as md_rows
 from xli.ui.text import display_width, truncate as truncate_cells
 
 # ---------------------------------------------------------------- styles
@@ -127,7 +127,11 @@ def truncate_left(text: str, width: int) -> str:
 
 # ---------------------------------------------------------------- transcript
 def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
-    """Render one agent event into zero or more screen rows."""
+    """Render one agent event into zero or more screen rows.
+
+    Assistant text goes through the markdown renderer; everything else is
+    plain, because tool output and diagnostics should be shown verbatim.
+    """
     if kind == "user":
         return _wrap([span("you  ", ACCENT), span(str(payload.get("text", "")))], width)
 
@@ -135,7 +139,14 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
         text = str(payload.get("text", "")).strip()
         if not text:
             return []
-        return _wrap([span("xli  ", GOOD), span(text)], width)
+        # The gutter is part of the indent, so the body wraps inside it. Every
+        # row is padded back to `width`: the TUI paints into a fixed frame and
+        # an unpadded row leaves the previous frame's characters on screen.
+        body_width = max(20, width - 5)
+        out: list[Row] = [_fit([span("xli  ", GOOD)], width)]
+        for row in md_rows(text, body_width):
+            out.append(_fit([span("     ", NORMAL)] + row, width))
+        return out
 
     if kind == "tool_call":
         name = str(payload.get("name", ""))

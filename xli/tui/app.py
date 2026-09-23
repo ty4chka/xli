@@ -61,16 +61,30 @@ class TuiState:
     kernel: str = ""
 
 
-STYLE_ATTRS = ("normal", "dim", "bold", "accent", "good", "warn", "bad")
+STYLE_ATTRS = (
+    "normal", "dim", "bold", "accent", "good", "warn", "bad",
+    "heading", "code", "quote", "link", "italic", "strike",
+)
 
 
 def _init_colors() -> dict[str, int]:
-    """Map style names to curses attributes; mono terminals degrade cleanly."""
+    """Map style names to curses attributes; mono terminals degrade cleanly.
+
+    Every style the markdown renderer can emit must be present, otherwise it
+    paints unstyled. Attributes are added on top of the colour pair, so a
+    terminal without colour still gets bold/reverse/underline.
+    """
     if not curses.has_colors():
-        return dict.fromkeys(STYLE_ATTRS, curses.A_NORMAL)
+        mapping = dict.fromkeys(STYLE_ATTRS, curses.A_NORMAL)
+        mapping["bold"] |= curses.A_BOLD
+        mapping["heading"] = curses.A_BOLD
+        mapping["code"] = curses.A_REVERSE
+        mapping["link"] = curses.A_UNDERLINE
+        return mapping
 
     curses.start_color()
     curses.use_default_colors()
+    # 256-colour palette; the fallbacks below keep it usable on 8-colour too.
     pairs = {
         "dim": (245, -1),
         "bold": (255, -1),
@@ -78,6 +92,12 @@ def _init_colors() -> dict[str, int]:
         "good": (42, -1),
         "warn": (214, -1),
         "bad": (203, -1),
+        "heading": (75, -1),
+        "code": (187, -1),
+        "quote": (103, -1),
+        "link": (81, -1),
+        "italic": (146, -1),
+        "strike": (244, -1),
     }
     mapping = {"normal": curses.A_NORMAL}
     for index, (name, (fg, bg)) in enumerate(pairs.items(), start=1):
@@ -87,6 +107,11 @@ def _init_colors() -> dict[str, int]:
         except curses.error:
             mapping[name] = curses.A_NORMAL
     mapping["bold"] |= curses.A_BOLD
+    mapping["heading"] |= curses.A_BOLD
+    mapping["code"] |= curses.A_REVERSE
+    mapping["quote"] |= curses.A_ITALIC if hasattr(curses, "A_ITALIC") else 0
+    mapping["link"] |= curses.A_UNDERLINE
+    mapping["strike"] |= curses.A_STANDOUT
     return mapping
 
 
@@ -216,9 +241,7 @@ class Tui:
         if isinstance(key, str):
             if key in ("\n", "\r"):
                 self._submit()
-            elif key == "\x03":
-                return False
-            elif key == "\x04":
+            elif key in ("\x03", "\x04"):  # ^C / ^D
                 return False
             elif key == "\x0c":
                 self.draw()
@@ -348,7 +371,6 @@ class Tui:
         self.draw()
 
     def _handle_approval_key(self, key: int) -> bool:
-        future = self.state.approval_future
         if key in (ord("y"), ord("Y")):
             self._resolve_approval(True)
         elif key in (ord("n"), ord("N"), 27):

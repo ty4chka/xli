@@ -80,6 +80,7 @@ _WIDE_RANGES: tuple[tuple[int, int], ...] = (
 #: Zero-width: combining marks, format controls, variation selectors.
 _ZERO_WIDTH_RANGES: tuple[tuple[int, int], ...] = (
     (0x0300, 0x036F),    # combining diacriticals
+    (0x1160, 0x11FF),    # Hangul Jamo medial vowels / final consonants
     (0x0483, 0x0489),
     (0x0591, 0x05BD),
     (0x200B, 0x200F),    # zero-width space .. RLM
@@ -92,10 +93,7 @@ _ZERO_WIDTH_RANGES: tuple[tuple[int, int], ...] = (
 
 
 def _in_ranges(code: int, ranges: tuple[tuple[int, int], ...]) -> bool:
-    for low, high in ranges:
-        if low <= code <= high:
-            return True
-    return False
+    return any(low <= code <= high for low, high in ranges)
 
 
 def char_width(char: str) -> int:
@@ -134,7 +132,11 @@ def truncate(text: str, width: int, *, ellipsis: str = "…") -> str:
 
     budget = width - display_width(ellipsis)
     if budget <= 0:
-        # Not even room for the ellipsis; fill what fits.
+        # No room for content *and* the ellipsis. Signalling that something was
+        # cut matters more than showing one stray character, so prefer the
+        # ellipsis when it fits at all.
+        if display_width(ellipsis) <= width:
+            return ellipsis
         out, used = "", 0
         for char in text:
             step = char_width(char)
@@ -154,16 +156,33 @@ def truncate(text: str, width: int, *, ellipsis: str = "…") -> str:
     return out + ellipsis
 
 
-def pad(text: str, width: int) -> str:
-    """Pad on the right with spaces to exactly `width` cells."""
+def pad(text: str, width: int, align: str = "left") -> str:
+    """Pad to exactly `width` cells, truncating first if the text is wider.
+
+    Callers lay rows into a fixed frame, so returning something longer than
+    `width` is never acceptable — an over-long row pushes the frame out of
+    alignment on every redraw.
+    """
+    if width <= 0:
+        return ""
+    text = truncate(text, width)
     gap = width - display_width(text)
-    return text + " " * gap if gap > 0 else text
+    if gap <= 0:
+        return text
+    if align == "right":
+        return " " * gap + text
+    if align == "center":
+        left = gap // 2
+        return " " * left + text + " " * (gap - left)
+    return text + " " * gap
 
 
 def split_cells(text: str, width: int) -> list[str]:
     """Split into chunks of at most `width` cells, without breaking a glyph."""
     if width <= 0:
-        return [text] if text else []
+        # Nothing fits, so return nothing. Claiming a 5-cell chunk fits in a
+        # 0-cell budget is the kind of quiet lie that overflows a frame later.
+        return []
     chunks: list[str] = []
     current, used = "", 0
     for char in text:
