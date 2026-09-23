@@ -27,16 +27,89 @@ ACCENT = "accent"
 GOOD = "good"
 WARN = "warn"
 BAD = "bad"
+HEADING = "heading"
+CODE = "code"
+QUOTE = "quote"
+LINK = "link"
+ITALIC = "italic"
+STRIKE = "strike"
 
 Span = tuple[str, str]
 Row = list[Span]
+
+#: Which colour a permission mode is drawn in. The mode is the single most
+#: consequential thing on screen -- it decides whether the agent may write -- so
+#: it gets its own colour rather than sharing the accent.
+MODE_STYLE = {"readonly": ACCENT, "confirm": WARN, "auto": BAD}
+
+#: Braille spinner frames. Braille dots occupy one cell in every terminal that
+#: can draw them at all, so the bar does not jitter as the animation runs.
+SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+#: Left-edge marker per transcript event. Together they form a spine you can
+#: scan without reading the text: a solid bar is something said, a branch is a
+#: tool, a vertical is its result.
+GUTTER = {
+    "user": ("▌", ACCENT),
+    "assistant": ("▌", GOOD),
+    "tool_call": ("├", DIM),
+    "tool_result": ("│", DIM),
+    "repair": ("┊", WARN),
+    "warning": ("┊", WARN),
+    "error": ("▌", BAD),
+    "step": ("·", DIM),
+    "note": ("·", DIM),
+}
 
 
 def span(text: str, style: str = NORMAL) -> Span:
     return (text, style)
 
 
+def spinner_frame(tick: int) -> str:
+    """One braille frame, cycling. Negative and huge ticks both wrap safely."""
+    return SPINNER[tick % len(SPINNER)]
+
+
 # ------------------------------------------------------------------- chrome
+def extend_rule(row: Row, width: int, *, style: str = DIM) -> Row:
+    """Append box-drawing fill to `row` so it spans exactly `width`.
+
+    Takes a row of spans rather than a string, because the alternative --
+    flattening to text first -- silently discards every style in it. The header
+    did exactly that and the permission-mode badge, the one thing on screen that
+    says whether the agent may write, came out the same grey as the rule.
+    """
+    if width <= 0:
+        return []
+    used = _row_width(row)
+    fill = width - used
+    if fill <= 0:
+        return _fit(row, width)
+    return _fit(list(row) + [("─" * fill, style)], width)
+
+
+def _rule(width: int, *, left: str = "", right: str = "", style: str = DIM) -> Row:
+    """A horizontal rule with text at each end, filled with box-drawing."""
+    if width <= 0:
+        return []
+    taken = display_width(left) + display_width(right)
+    fill = width - taken
+    if fill < 1:
+        return _fit([(left + right, style)], width)
+    if fill == 1:
+        return _fit([(left, style), ("─", style), (right, style)], width)
+    left_pad = " " if left else ""
+    right_pad = " " if right else ""
+    line = fill - display_width(left_pad) - display_width(right_pad)
+    if line < 1:
+        return _fit([(left + right, style)], width)
+    return _fit(
+        [(left, style), (left_pad, style), ("─" * line, style), (right_pad, style), (right, style)],
+        width,
+    )
+
+
 def header_rows(
     width: int,
     *,
@@ -46,20 +119,27 @@ def header_rows(
     session: str = "",
     kernel: str = "",
 ) -> list[Row]:
-    """The two-line banner pinned to the top."""
-    title = span(f" XLI {mode} ", BOLD)
-    left: Row = [title, span(f" {provider}/{model}", DIM)]
-    if kernel:
-        left.append(span(f"  kernel:{kernel}", DIM))
+    """The two-line banner pinned to the top.
 
-    right_text = f"session {session[:18]}" if session else ""
-    # Both rows must be exactly `width` cells or the frame around the window
-    # walks out of alignment on every redraw.
-    second: Row = [span(right_text, DIM)] if right_text else []
-    if right_text and width - display_width(right_text) > 0:
-        gap = width - display_width(right_text)
-        second = [span(" " * gap, NORMAL), span(right_text, DIM)]
-    return [_fit(left, width), _fit(second, width)]
+    Row one carries identity; row two carries state. The mode is drawn in its
+    own colour and the rule underneath is what separates the chrome from the
+    conversation.
+    """
+    mode_style = MODE_STYLE.get(mode, ACCENT)
+
+    first: Row = [
+        span(" XLI ", BOLD),
+        span("─", DIM),
+        span(f" {provider}/{model} ", DIM),
+    ]
+    if kernel:
+        first += [span("─", DIM), span(f" kernel:{kernel} ", DIM)]
+
+    second: Row = [span(f" {mode} ", mode_style)]
+    if session:
+        second += [span("─", DIM), span(f" {session[:18]} ", DIM)]
+
+    return [_fit(first, width), extend_rule(second, width)]
 
 
 def _justify(rows: list[Row], width: int) -> list[Row]:
@@ -126,14 +206,31 @@ def truncate_left(text: str, width: int) -> str:
 
 
 # ---------------------------------------------------------------- transcript
+#: Width of the left gutter, in cells. Every transcript row reserves it so the
+#: markers line up in a column and the text starts at the same place each time.
+GUTTER_WIDTH = 2
+
+
+def _gutter(kind: str) -> Row:
+    """The left-edge marker for an event kind."""
+    mark, style = GUTTER.get(kind, (" ", DIM))
+    return [span(f"{mark} ", style)]
+
+
 def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
     """Render one agent event into zero or more screen rows.
 
-    Assistant text goes through the markdown renderer; everything else is
+    Every row starts with a gutter marker, so the left edge reads as a spine:
+    you can see who spoke, which tool ran and where it failed without reading a
+    word. Assistant text goes through the markdown renderer; everything else is
     plain, because tool output and diagnostics should be shown verbatim.
     """
+    gutter = _gutter(kind)
+
     if kind == "user":
-        return _wrap([span("you  ", ACCENT), span(str(payload.get("text", "")))], width)
+        return _wrap(
+            gutter + [span("you ", ACCENT), span(str(payload.get("text", "")))], width
+        )
 
     if kind == "assistant":
         text = str(payload.get("text", "")).strip()
@@ -142,39 +239,40 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
         # The gutter is part of the indent, so the body wraps inside it. Every
         # row is padded back to `width`: the TUI paints into a fixed frame and
         # an unpadded row leaves the previous frame's characters on screen.
-        body_width = max(20, width - 5)
-        out: list[Row] = [_fit([span("xli  ", GOOD)], width)]
+        body_width = max(20, width - GUTTER_WIDTH - 4)
+        out: list[Row] = [_fit(gutter + [span("xli ", GOOD)], width)]
         for row in md_rows(text, body_width):
-            out.append(_fit([span("     ", NORMAL)] + row, width))
+            out.append(_fit([span(" " * (GUTTER_WIDTH + 1), NORMAL)] + row, width))
         return out
 
     if kind == "tool_call":
         name = str(payload.get("name", ""))
         args = _compact_args(payload.get("args") or {})
-        return _wrap([span("  -> ", DIM), span(f"{name} ", BOLD), span(args, DIM)], width)
+        return _wrap(gutter + [span(f"{name} ", BOLD), span(args, DIM)], width)
 
     if kind == "tool_result":
         ok = bool(payload.get("ok"))
         mark = span("ok ", GOOD) if ok else span("FAIL ", BAD)
         summary = str(payload.get("summary", ""))
-        return _wrap([span("     ", DIM), mark, span(summary, DIM)], width)
+        return _wrap(gutter + [mark, span(summary, DIM)], width)
 
     if kind == "repair":
-        return _wrap([span("  ! ", WARN), span(str(payload.get("detail", "")), WARN)], width)
+        return _wrap(gutter + [span(str(payload.get("detail", "")), WARN)], width)
 
     if kind == "warning":
-        return _wrap([span("  ! ", WARN), span(str(payload.get("message", "")), WARN)], width)
+        return _wrap(gutter + [span(str(payload.get("message", "")), WARN)], width)
 
     if kind == "error":
-        return _wrap([span("  x ", BAD), span(str(payload.get("message", "")), BAD)], width)
+        return _wrap(gutter + [span(str(payload.get("message", "")), BAD)], width)
 
     if kind == "step":
-        return [
-            [span(f"-- step {payload.get('index')}/{payload.get('max_steps')}", DIM)]
-        ]
+        return _wrap(
+            gutter + [span(f"step {payload.get('index')}/{payload.get('max_steps')}", DIM)],
+            width,
+        )
 
     if kind == "note":
-        return _wrap([span("  · ", DIM), span(str(payload.get("text", "")), DIM)], width)
+        return _wrap(gutter + [span(str(payload.get("text", "")), DIM)], width)
 
     return []
 
@@ -252,35 +350,77 @@ def status_row(
     busy: bool = False,
     hint: str = "",
     counters: dict[str, Any] | None = None,
+    tick: int = 0,
+    mode: str = "",
 ) -> Row:
-    """The bottom bar: what is happening plus how to get out."""
+    """The bottom bar: what is happening, how much has happened, how to get out.
+
+    Three segments separated by `│`: state on the left, counters in the middle,
+    keys on the right. The spinner animates rather than sitting still, because a
+    static "working…" on a request that has hung is indistinguishable from one
+    that is about to finish.
+    """
     counters = counters or {}
-    state = span(" working… ", BOLD) if busy else span(" ready ", BOLD)
-    parts: Row = [state]
+
+    if busy:
+        state: Row = [span(f" {spinner_frame(tick)} ", ACCENT), span("working ", BOLD)]
+    else:
+        state = [span(" ● ", GOOD), span("ready ", BOLD)]
+    if mode:
+        state.append(span(f"[{mode}]", MODE_STYLE.get(mode, DIM)))
 
     bits = []
     for key in ("steps", "tools", "errors", "tokens"):
         if key in counters:
             bits.append(f"{key} {counters[key]}")
+    middle: Row = [span(" │ ", DIM)] if bits else []
     if bits:
-        parts.append(span("  " + " · ".join(bits), DIM))
+        middle.append(span(" · ".join(bits), DIM))
 
     keys = hint or "^C quit · ^L redraw · Enter send · ↑ history"
-    filler = width - _row_width(parts) - len(keys)
+
+    used = _row_width(state) + _row_width(middle) + display_width(keys) + 2
+    filler = width - used
+    parts: Row = list(state) + list(middle)
     if filler > 0:
-        parts.append(span(" " * filler, DIM))
-    parts.append(span(keys, DIM))
+        parts.append(span(" " * filler, NORMAL))
+        parts.append(span(keys, DIM))
+    else:
+        # Too narrow for everything: the keys matter more than the counters,
+        # because they are how the user gets out.
+        parts.append(span(" ", NORMAL))
+        parts.append(span(truncate_cells(keys, max(0, width - _row_width(parts))), DIM))
     return _fit(parts, width)
 
 
-def input_row(width: int, prompt: str, text: str, *, cursor_visible: bool = True) -> Row:
-    prefix = span(prompt, ACCENT)
+def input_row(
+    width: int,
+    prompt: str,
+    text: str,
+    *,
+    cursor_visible: bool = True,
+    mode: str = "",
+) -> Row:
+    """The composition line.
+
+    The prompt takes the mode's colour, so a session that has been switched to
+    readonly looks different at the point where the user is typing -- which is
+    the moment the distinction actually matters.
+    """
+    prefix = span(prompt, MODE_STYLE.get(mode, ACCENT))
     available = width - display_width(prompt)
     body = text if display_width(text) <= available else truncate_left(text, available)
     row: Row = [prefix, span(body)]
     if cursor_visible and _row_width(row) < width:
-        row.append(span(" ", BOLD))
+        row.append(span("▏", ACCENT))
     return _fit(row, width)
+
+
+def separator_row(width: int, *, style: str = DIM) -> Row:
+    """The rule between the conversation and the composition line."""
+    if width <= 0:
+        return []
+    return _fit([("─" * width, style)], width)
 
 
 # --------------------------------------------------------------------- layout
@@ -291,7 +431,10 @@ class Layout:
     width: int
     height: int
     header_lines: int = 2
-    input_lines: int = 1
+    #: Two, not one: the rule above the composition line is part of the region.
+    #: Painting both rows while reserving one made the status bar overwrite the
+    #: line the user was typing on.
+    input_lines: int = 2
     status_lines: int = 1
 
     @property

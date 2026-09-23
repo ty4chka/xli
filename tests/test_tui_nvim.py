@@ -26,8 +26,15 @@ class TestLayout:
         layout = make_layout(100, 40)
         assert layout.body_top == 2
         assert layout.body_bottom == layout.input_top
-        assert layout.status_top == layout.input_top + 1
-        assert layout.body_height == 40 - 2 - 1 - 1
+        # The input region is two rows: the rule and the composition line.
+        assert layout.status_top == layout.input_top + layout.input_lines
+        assert layout.body_height == 40 - 2 - 2 - 1
+        # Nothing may paint past the last line of the terminal.
+        assert layout.status_top + layout.status_lines == 40
+
+    def test_input_region_holds_the_rule_and_the_composition_line(self):
+        layout = make_layout(100, 40)
+        assert layout.input_lines == 2
 
     def test_minimum_height_still_has_a_body(self):
         layout = make_layout(80, 4)
@@ -365,3 +372,159 @@ class TestNvimInstall:
         result = installer.install_plugin(target=tmp_path / "out")
         assert result["ok"] is False
         assert "not found" in result["error"]
+
+
+# --------------------------------------------------------------- visual chrome
+# input_row and status_row are already imported at the top of this file.
+from xli.tui.widgets import (  # noqa: E402
+    GUTTER,
+    MODE_STYLE,
+    SPINNER,
+    extend_rule,
+    separator_row,
+    spinner_frame,
+)
+
+
+class TestSpinner:
+    def test_frames_are_all_one_cell(self):
+        # A frame that is not exactly one cell makes the whole bar jitter.
+        from xli.ui.text import display_width
+
+        assert all(display_width(frame) == 1 for frame in SPINNER)
+
+    def test_cycles(self):
+        assert spinner_frame(0) == SPINNER[0]
+        assert spinner_frame(len(SPINNER)) == SPINNER[0]
+
+    def test_negative_tick_wraps_safely(self):
+        assert spinner_frame(-1) == SPINNER[-1]
+
+    def test_busy_status_bar_changes_with_the_tick(self):
+        # A static indicator on a hung request is indistinguishable from one
+        # that is about to finish.
+        a = "".join(t for t, _ in status_row(60, busy=True, tick=0))
+        b = "".join(t for t, _ in status_row(60, busy=True, tick=3))
+        assert a != b
+
+    def test_idle_bar_is_stable(self):
+        a = "".join(t for t, _ in status_row(60, busy=False, tick=0))
+        b = "".join(t for t, _ in status_row(60, busy=False, tick=5))
+        assert a == b
+
+
+class TestModeColour:
+    def test_every_mode_has_a_colour(self):
+        assert set(MODE_STYLE) == {"readonly", "confirm", "auto"}
+
+    def test_header_mode_badge_keeps_its_style(self):
+        # extend_rule must not flatten the spans: the mode is the one thing on
+        # screen that says whether the agent may write.
+        rows = header_rows(60, model="m", provider="p", mode="confirm")
+        assert any(style == MODE_STYLE["confirm"] for text, style in rows[1] if "confirm" in text)
+
+    def test_input_prompt_takes_the_mode_colour(self):
+        row = input_row(40, " ❯ ", "text", mode="readonly")
+        assert row[0][1] == MODE_STYLE["readonly"]
+
+    def test_input_prompt_falls_back_without_a_mode(self):
+        assert input_row(40, " ❯ ", "text")[0][1] == "accent"
+
+
+class TestExtendRule:
+    def test_pads_to_exact_width(self):
+        assert _row_width(extend_rule([("ab", "bold")], 10)) == 10
+
+    def test_preserves_the_original_style(self):
+        row = extend_rule([("ab", "warn")], 10)
+        assert row[0] == ("ab", "warn")
+
+    def test_fill_is_box_drawing(self):
+        assert "─" in "".join(t for t, _ in extend_rule([("ab", "dim")], 10))
+
+    def test_zero_width_yields_nothing(self):
+        assert extend_rule([("ab", "dim")], 0) == []
+
+    def test_overlong_row_is_clamped(self):
+        assert _row_width(extend_rule([("x" * 40, "dim")], 10)) == 10
+
+
+class TestSeparator:
+    def test_exact_width(self):
+        assert _row_width(separator_row(30)) == 30
+
+    def test_is_a_rule(self):
+        assert "".join(t for t, _ in separator_row(10)) == "─" * 10
+
+    def test_zero_width_yields_nothing(self):
+        assert separator_row(0) == []
+
+
+class TestGutters:
+    def test_every_known_kind_has_a_marker(self):
+        for kind in ("user", "assistant", "tool_call", "tool_result", "error"):
+            assert kind in GUTTER
+
+    def test_markers_are_one_cell(self):
+        from xli.ui.text import display_width
+
+        assert all(display_width(mark) == 1 for mark, _ in GUTTER.values())
+
+    def test_distinct_kinds_have_distinct_markers(self):
+        marks = {GUTTER[k][0] for k in ("user", "tool_call", "tool_result", "step")}
+        assert len(marks) == 4
+
+    def test_rows_start_with_the_marker(self):
+        rows = transcript_row("tool_call", {"name": "read", "args": {}}, 60)
+        assert rows[0][0][0].startswith(GUTTER["tool_call"][0])
+
+    def test_error_uses_the_bad_colour(self):
+        rows = transcript_row("error", {"message": "boom"}, 60)
+        assert GUTTER["error"][1] == "bad"
+        assert rows[0][0][1] == "bad"
+
+
+class TestStatusBarSegments:
+    def test_exact_width_at_many_sizes(self):
+        for width in (20, 40, 60, 80, 120):
+            assert _row_width(status_row(width, busy=True, tick=1)) == width
+
+    def test_counters_appear_when_given(self):
+        flat = "".join(t for t, _ in status_row(80, counters={"steps": 3, "tools": 2}))
+        assert "steps 3" in flat and "tools 2" in flat
+
+    def test_hint_replaces_the_default_keys(self):
+        flat = "".join(t for t, _ in status_row(80, hint="y/n approve"))
+        assert "y/n approve" in flat
+
+    def test_narrow_terminal_keeps_the_keys(self):
+        # When there is not room for everything, the way out wins.
+        flat = "".join(t for t, _ in status_row(28, busy=True, tick=0))
+        assert "^C" in flat
+        assert _row_width(status_row(28, busy=True, tick=0)) == 28
+
+    def test_mode_badge_is_shown(self):
+        flat = "".join(t for t, _ in status_row(80, mode="readonly"))
+        assert "readonly" in flat
+
+
+class TestCyrillicLayout:
+    """The regression this overhaul must not reintroduce."""
+
+    def test_cyrillic_rows_are_exact_width(self):
+        for kind, payload in [
+            ("user", {"text": "почини баг в провайдере"}),
+            ("assistant", {"text": "Смотрю **код**.\n\n- пункт один\n- пункт два"}),
+            ("tool_call", {"name": "read", "args": {"path": "файл.py"}}),
+            ("tool_result", {"ok": True, "summary": "прочитано 1080 строк"}),
+            ("error", {"message": "провайдер недоступен"}),
+        ]:
+            for row in transcript_row(kind, payload, 50):
+                assert _row_width(row) == 50, f"{kind} row overflows"
+
+    def test_cyrillic_input_is_exact_width(self):
+        assert _row_width(input_row(40, " ❯ ", "привет мир, как дела?")) == 40
+
+    def test_wide_glyphs_do_not_break_the_frame(self):
+        for row in transcript_row("assistant", {"text": "日本語のテキスト 🎉" * 4}, 40):
+            assert _row_width(row) == 40

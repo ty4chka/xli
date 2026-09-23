@@ -24,7 +24,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
-from xli.tui.widgets import (
+from xli.tui.widgets import (  # noqa: F401  (re-exported for tests)
+    separator_row,
     Row,
     approval_rows,
     header_rows,
@@ -59,6 +60,9 @@ class TuiState:
     mode: str = "confirm"
     session_id: str = ""
     kernel: str = ""
+    #: Advances on every repaint so the spinner moves. A static "working…" on a
+    #: request that has hung is indistinguishable from one about to finish.
+    tick: int = 0
 
 
 STYLE_ATTRS = (
@@ -172,7 +176,11 @@ class Tui:
             self._paint_rows(top, modal)
 
         self._paint_rows(
-            layout.input_top, [input_row(width, " ❯ ", self.state.buffer)]
+            layout.input_top,
+            [
+                separator_row(width),
+                input_row(width, " ❯ ", self.state.buffer, mode=self.state.mode),
+            ],
         )
         self._paint_rows(
             layout.status_top,
@@ -181,12 +189,13 @@ class Tui:
                     width,
                     busy=self.state.busy,
                     counters=self.state.counters,
-                    hint=(
-                        "y/n approve" if self.state.approval else ""
-                    ),
+                    hint="y/n approve" if self.state.approval else "",
+                    tick=self.state.tick,
+                    mode=self.state.mode,
                 )
             ],
         )
+        self.state.tick += 1
         self.screen.refresh()
 
     def _draw_too_small(self, width: int, height: int) -> None:
