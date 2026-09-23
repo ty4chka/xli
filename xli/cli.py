@@ -954,6 +954,103 @@ def cmd_repl(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------- parser
+def cmd_agents(args: argparse.Namespace) -> int:
+    """`xli agents` — list, inspect, create, verify and run sub-agents."""
+    from xli.agents import AgentSpec, get_registry, reset_registry
+
+    reset_registry()
+    registry = get_registry(project_root=Path(args.project) if args.project else Path.cwd())
+    action = args.action
+
+    if action == "list":
+        rows = registry.summary()
+        if args.json:
+            _emit(rows, True)
+            return EXIT_OK
+        if not rows:
+            print("no sub-agents defined")
+            return EXIT_OK
+        print(STYLE.bold(f"{len(rows)} sub-agent(s)"))
+        for row in rows:
+            origin = STYLE.dim("built-in") if row["builtin"] else STYLE.green("custom")
+            print(f"  {STYLE.bold(row['name']):22} {origin}  {row['mode']}")
+            print(STYLE.dim(f"    {row['description']}"))
+            print(STYLE.dim(f"    tools: {', '.join(row['tools'])}"))
+        return EXIT_OK
+
+    if action == "show":
+        spec = registry.get(args.name)
+        if spec is None:
+            print(STYLE.red(f"no such sub-agent: {args.name}"), file=sys.stderr)
+            return EXIT_USAGE
+        if args.json:
+            _emit(spec.to_dict(), True)
+        else:
+            print(spec.system_prompt(project=args.project or str(Path.cwd())))
+        return EXIT_OK
+
+    if action == "verify":
+        from xli.tools.registry import default_registry
+
+        available = default_registry().names(enabled_only=False)
+        report = registry.verify(available)
+        if args.json:
+            _emit(report, True)
+            return EXIT_OK if not report else EXIT_FAILED
+        if not report:
+            print(STYLE.green(f"all {len(registry)} sub-agent(s) valid"))
+            return EXIT_OK
+        for name, problems in sorted(report.items()):
+            print(STYLE.red(f"  {name}"))
+            for problem in problems:
+                print(STYLE.dim(f"    - {problem}"))
+        return EXIT_FAILED
+
+    if action == "create":
+        if not args.name:
+            print("usage: xli agents create <name> --description ... --role ...", file=sys.stderr)
+            return EXIT_USAGE
+        spec = AgentSpec(
+            name=args.name,
+            description=args.description or "",
+            role=args.role or "",
+            tools=[t.strip() for t in (args.tools or "read,ls,glob,grep").split(",") if t.strip()],
+            mode=args.agent_mode or "confirm",
+            max_steps=args.max_steps or 12,
+        )
+        problems = spec.validate()
+        if problems:
+            for problem in problems:
+                print(STYLE.red(f"  {problem}"), file=sys.stderr)
+            return EXIT_USAGE
+        path = registry.save(spec, project=bool(args.to_project))
+        print(STYLE.green(f"created {spec.name}"))
+        print(STYLE.dim(f"wrote {path}"))
+        return EXIT_OK
+
+    if action == "delete":
+        if not args.name:
+            print("usage: xli agents delete <name>", file=sys.stderr)
+            return EXIT_USAGE
+        spec = registry.get(args.name)
+        if spec is None:
+            print(STYLE.red(f"no such sub-agent: {args.name}"), file=sys.stderr)
+            return EXIT_USAGE
+        if spec.builtin:
+            print(
+                STYLE.red(f"{args.name} is built-in and cannot be deleted; "
+                          "override it with `xli agents create --project`"),
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+        registry.delete(args.name)
+        print(STYLE.green(f"deleted {args.name}"))
+        return EXIT_OK
+
+    print(f"unknown agents action: {action}", file=sys.stderr)
+    return EXIT_USAGE
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xli",
@@ -1097,6 +1194,48 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="report what is and is not working")
     doctor.add_argument("--json", action="store_true")
     doctor.set_defaults(func=cmd_doctor)
+
+    agents = sub.add_parser("agents", help="sub-agents: list, create, verify")
+    agents_sub = agents.add_subparsers(dest="action", required=True)
+
+    # Every action resolves specs relative to a project, so each one takes the
+    # same --project. It is declared per action rather than on `agents` itself,
+    # because argparse does not propagate a parent's option into the namespace
+    # of a subparser that never saw it.
+    def _agents_parser(name: str, help_text: str) -> argparse.ArgumentParser:
+        child = agents_sub.add_parser(name, help=help_text)
+        child.add_argument("--project", help="project directory (default: cwd)")
+        return child
+
+    agents_list = _agents_parser("list", "list sub-agents")
+    agents_list.add_argument("--json", action="store_true")
+
+    agents_show = _agents_parser("show", "print a sub-agent's prompt")
+    agents_show.add_argument("name")
+    agents_show.add_argument("--json", action="store_true")
+
+    agents_verify = _agents_parser("verify", "check every spec is usable")
+    agents_verify.add_argument("--json", action="store_true")
+
+    agents_create = _agents_parser("create", "define a new sub-agent")
+    agents_create.add_argument("name")
+    agents_create.add_argument("--description", help="one line: when to delegate to it")
+    agents_create.add_argument("--role", help="the instructions it runs with")
+    agents_create.add_argument("--tools", help="comma-separated tool names")
+    agents_create.add_argument(
+        "--agent-mode", choices=["readonly", "confirm"], help="permission mode"
+    )
+    agents_create.add_argument("--max-steps", type=int, help="step budget")
+    agents_create.add_argument(
+        "--to-project",
+        action="store_true",
+        help="write into <project>/.xli/agents instead of ~/.xli/agents",
+    )
+
+    agents_delete = _agents_parser("delete", "remove a custom sub-agent")
+    agents_delete.add_argument("name")
+
+    agents.set_defaults(func=cmd_agents)
 
     return parser
 
