@@ -1051,6 +1051,68 @@ def cmd_agents(args: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
+def cmd_clarify(args: argparse.Namespace) -> int:
+    """`xli clarify` — ask the questions that make a vague task runnable.
+
+    A vague task is the main reason an agent does the wrong thing confidently.
+    The answers are printed as shell assignments so they can be captured, or as
+    JSON for a script, rather than being kept in a process that then exits.
+    """
+    from xli.ui.questionnaire import CHOICE, CONFIRM, Question, TerminalQuestionnaire
+
+    questions = [
+        Question(
+            id="goal",
+            question="What should the result look like when it is done?",
+            hint="One sentence. This is what the agent will check itself against.",
+        ),
+        Question(
+            id="scope",
+            question="How much may it touch?",
+            type=CHOICE,
+            options=["only the files named", "this package", "anywhere it needs to"],
+            default="this package",
+        ),
+        Question(
+            id="verify",
+            question="How should it prove the work is correct?",
+            hint="A command, or 'none'.",
+            default="run the test suite",
+        ),
+        Question(
+            id="tests",
+            question="May it add or change tests?",
+            type=CONFIRM,
+            default="y",
+        ),
+        Question(
+            id="constraints",
+            question="Anything it must not do?",
+            required=False,
+        ),
+    ]
+
+    if not sys.stdin.isatty():
+        print(
+            STYLE.yellow("clarify needs an interactive terminal; answers skipped"),
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    answers = TerminalQuestionnaire().run(questions)
+
+    if args.json:
+        _emit(answers, True)
+        return EXIT_OK
+
+    print()
+    print(STYLE.bold("task brief"))
+    for key, value in answers.items():
+        if value:
+            print(f"  {STYLE.bold(key)}: {value}")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xli",
@@ -1236,6 +1298,10 @@ def build_parser() -> argparse.ArgumentParser:
     agents_delete.add_argument("name")
 
     agents.set_defaults(func=cmd_agents)
+
+    clarify = sub.add_parser("clarify", help="answer the questions that make a task runnable")
+    clarify.add_argument("--json", action="store_true")
+    clarify.set_defaults(func=cmd_clarify)
 
     return parser
 
