@@ -16,6 +16,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from xli.ui.markdown import inline_spans, render_rows as md_rows, wrap_row
+from xli.ui.text import display_width, truncate as truncate_cells
+
 # ---------------------------------------------------------------- styles
 NORMAL = "normal"
 DIM = "dim"
@@ -50,11 +53,12 @@ def header_rows(
         left.append(span(f"  kernel:{kernel}", DIM))
 
     right_text = f"session {session[:18]}" if session else ""
-    # Both rows must be exactly `width` columns or the frame around the window
+    # Both rows must be exactly `width` cells or the frame around the window
     # walks out of alignment on every redraw.
     second: Row = [span(right_text, DIM)] if right_text else []
-    if right_text and width - len(right_text) > 0:
-        second = [span(" " * (width - len(right_text)), NORMAL), span(right_text, DIM)]
+    if right_text and width - display_width(right_text) > 0:
+        gap = width - display_width(right_text)
+        second = [span(" " * gap, NORMAL), span(right_text, DIM)]
     return [_fit(left, width), _fit(second, width)]
 
 
@@ -67,27 +71,58 @@ def _justify(rows: list[Row], width: int) -> list[Row]:
 
 
 def _fit(row: Row, width: int) -> Row:
-    """Truncate a row to `width`, then pad with blanks."""
+    """Truncate a row to `width` cells, then pad with blanks.
+
+    Measured in terminal cells, not characters: a wide glyph occupies two, so
+    counting len() let the row overrun and the frame stepped out of alignment
+    on every redraw.
+    """
     result: Row = []
     used = 0
     for text, style in row:
         remaining = width - used
         if remaining <= 0:
             break
-        if len(text) > remaining:
-            # Show an ellipsis rather than silently cutting mid-word.
-            result.append((text[: max(0, remaining - 1)] + "…" if remaining > 1 else "…", style))
+        if display_width(text) > remaining:
+            result.append((truncate_cells(text, remaining), style))
             used = width
             break
         result.append((text, style))
-        used += len(text)
+        used += display_width(text)
     if used < width:
         result.append((" " * (width - used), NORMAL))
     return result
 
 
 def _row_width(row: Row) -> int:
-    return sum(len(text) for text, _ in row)
+    return sum(display_width(text) for text, _ in row)
+
+
+def truncate_left(text: str, width: int) -> str:
+    """Keep the *end* of `text`, prefixed with an ellipsis.
+
+    For the input line, where the newest characters are what the user is
+    looking at, so scrolling has to drop from the left.
+    """
+    if width <= 0:
+        return ""
+    if display_width(text) <= width:
+        return text
+    budget = width - display_width("…")
+    if budget <= 0:
+        return "…"
+    chars = list(text)
+    out: list[str] = []
+    used = 0
+    for char in reversed(chars):
+        from xli.ui.text import char_width
+
+        step = char_width(char)
+        if used + step > budget:
+            break
+        out.append(char)
+        used += step
+    return "…" + "".join(reversed(out))
 
 
 # ---------------------------------------------------------------- transcript
@@ -140,7 +175,7 @@ def _compact_args(args: dict[str, Any], limit: int = 90) -> str:
         text = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
     except (TypeError, ValueError):
         text = str(args)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return text if display_width(text) <= limit else truncate_cells(text, limit)
 
 
 def _wrap(row: Row, width: int) -> list[Row]:
@@ -166,7 +201,7 @@ def _wrap(row: Row, width: int) -> list[Row]:
             current, used = [], 0
             continue
         for word in _split_words(text):
-            word_len = len(word)
+            word_len = display_width(word)
             if used + word_len > width and current:
                 rows.append(current)
                 current, used = [], 0
@@ -229,8 +264,8 @@ def status_row(
 
 def input_row(width: int, prompt: str, text: str, *, cursor_visible: bool = True) -> Row:
     prefix = span(prompt, ACCENT)
-    available = width - len(prompt)
-    body = text if len(text) <= available else "…" + text[-(available - 1) :]
+    available = width - display_width(prompt)
+    body = text if display_width(text) <= available else truncate_left(text, available)
     row: Row = [prefix, span(body)]
     if cursor_visible and _row_width(row) < width:
         row.append(span(" ", BOLD))
@@ -309,13 +344,21 @@ def approval_rows(tool: str, args: dict[str, Any], reason: str, width: int) -> l
 
 
 def json_dumps(value: Any, limit: int = 300) -> str:
+    """Serialise for logs. Truncation keeps an ASCII ``"..."`` suffix.
+
+    This is a serialisation helper, not a display helper, so it deliberately
+    avoids the typographic ellipsis: log lines and nvim payloads are consumed
+    by things that should not have to assume UTF-8.
+    """
     import json
 
     try:
         text = json.dumps(value, ensure_ascii=False, indent=None, separators=(",", ":"))
     except (TypeError, ValueError):
         text = str(value)
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+    if display_width(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
 
 
 # ------------------------------------------------------------------- help pane

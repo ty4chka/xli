@@ -188,19 +188,54 @@ class Tui:
                 column += len(text)
 
     # ------------------------------------------------------------------ input
-    def _handle_key(self, key: int) -> bool:
-        """Return False to quit."""
+    def _read_char(self):
+        """One keypress, as a str for text or an int for a function key.
+
+        `getch()` returns one byte at a time, so a Cyrillic character arrived
+        as two events and the buffer filled with mojibake. `get_wch()` decodes
+        according to the locale set at startup and returns the whole character.
+        Function keys still come back as ints, so callers must handle both.
+        """
+        if self.screen is None:
+            return -1
+        try:
+            return self.screen.get_wch()
+        except curses.error:
+            return -1
+        except KeyboardInterrupt:
+            return 3
+
+    def _handle_key(self, key) -> bool:
+        """Return False to quit. `key` is a str or an int."""
         state = self.state
 
         if state.approval is not None:
             return self._handle_approval_key(key)
+
+        # Text arrives as a one-character string; keys as an int.
+        if isinstance(key, str):
+            if key in ("\n", "\r"):
+                self._submit()
+            elif key == "\x03":
+                return False
+            elif key == "\x04":
+                return False
+            elif key == "\x0c":
+                self.draw()
+            elif key == "\x15":
+                state.buffer = ""
+            elif key in ("\x08", "\x7f"):
+                state.buffer = state.buffer[:-1]
+            elif key >= " ":
+                state.buffer += key
+            return True
 
         if key in (3, 4):  # ^C / ^D
             return False
         if key == 12:  # ^L
             self.draw()
             return True
-        if key == 10 or key == 13:  # Enter
+        if key in (10, 13):  # Enter
             self._submit()
             return True
         if key == curses.KEY_UP:
@@ -432,7 +467,7 @@ class Tui:
         self.screen.nodelay(True)
         try:
             while True:
-                key = self.screen.getch()
+                key = self._read_char()
                 if key == -1:
                     break
                 if not self._handle_key(key):
@@ -450,7 +485,7 @@ class Tui:
             self._submit()
 
         while True:
-            key = self.screen.getch()
+            key = self._read_char()
             if key == -1:
                 self.draw()
                 continue
@@ -469,11 +504,45 @@ def _curses_main(stdscr, app: Tui, initial_task: str) -> int:
     return asyncio.run(app.run_async(initial_task))
 
 
+def _setup_locale() -> str:
+    """Ask curses for UTF-8, returning the encoding it settled on.
+
+    Without this the process runs in the C locale, curses reads the keyboard a
+    byte at a time, and every multibyte character arrives as several
+    characters. Typing "привет" put "Ð¿ÑÐ¸Ð²ÐµÑ" in the buffer, and wide
+    glyphs were measured one cell short so the frame walked out of alignment.
+
+    The user's locale is tried first; if it is unset or unsupported, a UTF-8
+    locale is forced, because a terminal that can show the text is worth more
+    than a locale name that matches the environment.
+    """
+    import locale
+
+    for candidate in ("", "C.UTF-8", "en_US.UTF-8", "ru_RU.UTF-8", "UTF-8"):
+        try:
+            locale.setlocale(locale.LC_ALL, candidate)
+        except locale.Error:
+            continue
+        encoding = (locale.getencoding() or "").lower()
+        if encoding in ("utf-8", "utf8"):
+            return "utf-8"
+
+    try:
+        locale.setlocale(locale.LC_CTYPE, "")
+    except locale.Error:
+        pass
+    return (locale.getencoding() or "ascii").lower()
+
+
 def run_tui(config, *, initial_task: str = "", registry=None, policy=None, provider=None) -> int:
     """Entry point used by `xli tui`. Returns a process exit code."""
     if not sys.stdout.isatty():
         print("the TUI needs a terminal — use `xli run` or `xli repl` instead", file=sys.stderr)
         return 2
+
+    # Before curses starts: the locale decides whether the keyboard delivers
+    # characters or bytes.
+    _setup_locale()
 
     app = Tui(config, registry=registry, policy=policy, provider=provider)
     try:
