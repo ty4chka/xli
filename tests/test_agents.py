@@ -353,3 +353,33 @@ class TestGetRegistry:
         first = get_registry(tmp_path)
         reset_registry()
         assert get_registry(tmp_path) is not first
+
+
+# ------------------------------------------------------- CLI action consistency
+class TestCliActionConsistency:
+    """`xli tools list` worked while `xli skills list` did not.
+
+    The same shape of command behaved two ways, which is the kind of
+    inconsistency that makes a CLI feel untrustworthy even when every command
+    individually works.
+    """
+
+    @pytest.mark.parametrize("command", ["tools", "skills", "mcp", "agents"])
+    def test_the_bare_command_parses(self, command):
+        from xli.cli import build_parser
+
+        args = build_parser().parse_args([command] if command != "agents" else [command, "list"])
+        assert args.func is not None
+
+    @pytest.mark.parametrize("command", ["tools", "skills", "mcp"])
+    def test_the_list_action_parses(self, command):
+        from xli.cli import build_parser
+
+        args = build_parser().parse_args([command, "list"])
+        assert args.action == "list"
+
+    def test_an_unknown_action_is_refused(self):
+        from xli.cli import build_parser
+
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["skills", "frobnicate"])

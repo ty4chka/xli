@@ -1187,11 +1187,16 @@ def build_parser() -> argparse.ArgumentParser:
     session.set_defaults(func=cmd_session)
 
     # --- skills / mcp
+    # Both take the same optional `action` that `tools` does, so `xli skills`,
+    # `xli skills list`, `xli mcp` and `xli mcp list` all behave the way the
+    # neighbouring command already taught the user to expect.
     skills = sub.add_parser("skills", help="list skill definitions")
+    skills.add_argument("action", choices=["list"], nargs="?", default="list")
     skills.add_argument("--json", action="store_true")
     skills.set_defaults(func=cmd_skills)
 
     mcp = sub.add_parser("mcp", help="list MCP servers")
+    mcp.add_argument("action", choices=["list"], nargs="?", default="list")
     mcp.add_argument("--json", action="store_true")
     mcp.set_defaults(func=cmd_mcp)
 

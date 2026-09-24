@@ -39,7 +39,7 @@ class HeadlessUI(XliUI):
 When you need specialized help, delegate to sub-agents using the task tool.
 Available sub-agents:
 - @coder: writes code
-- @tester: writes tests  
+- @tester: writes tests
 - @debugger: fixes bugs
 - @optimizer: optimizes code
 - @reviewer: reviews code
