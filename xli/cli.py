@@ -9,12 +9,13 @@ Subcommands
     xli tui             full-screen interface
     xli serve           run the JSON-RPC kernel (stdio or unix socket)
     xli config          inspect and change settings
-    xli kernel          Cython build of xli.core: preflight/build/status/clean
+    xli kernel          Cython build of xli.core: preflight/build/status/clean/info
     xli tools           list tools, dump schemas, show call stats
     xli session         list/show/delete conversation history
-    xli skills          list skill definitions
+    xli skills          list and search skill definitions
     xli mcp             list MCP servers
     xli nvim            install the Neovim plugin
+    xli guides          read the in-tree walkthroughs
     xli doctor          report what is and is not working
 
 Every command has a `--json` flag where it makes sense, so the CLI is usable as
@@ -35,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from xli import VERSION  # re-exported: `xli --version` reads it
+from xli.ui.locale import t
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -101,64 +103,30 @@ class Style:
     def strike(self, text: str) -> str:
         return self._wrap("9", text)
 
+    def italic(self, text: str) -> str:
+        return self._wrap("3", text)
+
 
 STYLE = Style()
-
-
-# Markdown span styles, mapped to the same vocabulary the TUI's curses palette
-# uses, so one renderer drives both front ends.
-_ANSI_FOR_STYLE = {
-    "normal": None,
-    "dim": "2",
-    "bold": "1",
-    "accent": "36",
-    "good": "32",
-    "warn": "33",
-    "bad": "31",
-    "heading": "1;94",
-    "code": "7",
-    "quote": "3;90",
-    "link": "4;36",
-    "italic": "3",
-    "strike": "9",
-}
 
 
 def render_markdown_ansi(markdown: str, width: int | None = None) -> str:
     """Markdown as ANSI-coloured text for the CLI.
 
-    Uses the same parser as the TUI, so the two never drift apart in what they
-    consider a heading or a list. Falls back to plain text when stdout is not a
-    terminal or NO_COLOR is set.
+    The renderer lives in xli.ui.ansi so the REPL can use it without importing
+    the CLI (that import used to close a cli ↔ repl cycle); here we only pass
+    the CLI's own colour decision through.
     """
-    from xli.ui.markdown import render_rows
+    from xli.ui.ansi import render_markdown_ansi as _render
 
-    if width is None:
-        width = _terminal_width()
-
-    rows = render_rows(markdown, width)
-    if not STYLE.enabled:
-        return "\n".join("".join(t for t, _ in row).rstrip() for row in rows)
-
-    out: list[str] = []
-    for row in rows:
-        parts: list[str] = []
-        for text, style in row:
-            code = _ANSI_FOR_STYLE.get(style)
-            parts.append(f"\033[{code}m{text}\033[0m" if code else text)
-        out.append("".join(parts).rstrip())
-    return "\n".join(out)
+    return _render(markdown, width, enabled=STYLE.enabled)
 
 
 def _terminal_width(default: int = 80) -> int:
     """Usable width, from COLUMNS or the tty, never wider than the terminal."""
-    raw = os.environ.get("COLUMNS")
-    if raw and raw.isdigit() and int(raw) > 0:
-        return int(raw)
-    try:
-        return max(20, os.get_terminal_size(sys.stdout.fileno()).columns)
-    except (OSError, ValueError, AttributeError):
-        return default
+    from xli.ui.ansi import terminal_width
+
+    return terminal_width(default)
 
 
 # --------------------------------------------------------------------- wiring
@@ -240,14 +208,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not args.no_session:
         session = Session(root=Path(args.project) if args.project else Path.cwd())
 
+    from xli.ui.locale import configure as configure_locale, t
+
+    configure_locale(config)
+
     try:
         provider = _build_provider(config)
     except ValueError as exc:
-        print(STYLE.red(f"environment: {exc}"), file=sys.stderr)
-        print(
-            STYLE.dim("  set the API key, or run `xli config set provider <name>`"),
-            file=sys.stderr,
-        )
+        print(STYLE.red(t("environment", exc=exc)), file=sys.stderr)
+        print(STYLE.dim(t("env_hint")), file=sys.stderr)
         return EXIT_ENVIRONMENT
 
     events: list[dict[str, Any]] = []
@@ -281,48 +250,69 @@ def cmd_run(args: argparse.Namespace) -> int:
         print()
         colour = STYLE.green if result.ok else STYLE.red
         print(colour(STYLE.bold(f"[{result.stopped_reason}] ") + result.summary))
+        if result.stopped_reason == "provider_error":
+            # The summary here is the raw exception; the human line explains it.
+            from xli.ui.locale import humanise_provider_error
+
+            print(STYLE.red("  " + humanise_provider_error(result.summary)))
+        else:
+            print(STYLE.dim("  " + t(f"stop_{result.stopped_reason}")))
         if session:
-            print(STYLE.dim(f"session {session.session_id}"))
+            print(STYLE.dim(t("session", session_id=session.session_id)))
 
     return EXIT_OK if result.ok else EXIT_FAILED
 
 
 def _render_event(kind: str, payload: dict[str, Any]) -> None:
+    from xli.ui.locale import humanise_provider_error, t
+    from xli.ui.summary import summarise_call
+
     if kind == "assistant":
         text = payload.get("text", "").strip()
         if text:
             # Rendered through the same markdown parser the TUI uses, so a
             # heading or a code fence looks like one in both front ends.
-            print(STYLE.cyan("xli "))
+            print(STYLE.magenta("xli "))
             print(render_markdown_ansi(text))
     elif kind == "tool_call":
-        args_text = json.dumps(payload.get("args", {}), ensure_ascii=False)
-        if len(args_text) > 120:
-            args_text = args_text[:117] + "..."
-        print(STYLE.dim(f"  -> {payload.get('name')} {args_text}"))
+        name = str(payload.get("name", ""))
+        args = payload.get("args") or {}
+        if name == "think":
+            # Reasoning is shown, not executed output: its own quiet line.
+            print(STYLE.italic(f"  * {str(args.get('thought', '')).strip()}"))
+        else:
+            print(STYLE.dim(f"  -> {name} {summarise_call(name, args)}"))
     elif kind == "tool_result":
-        mark = STYLE.green("ok") if payload.get("ok") else STYLE.red("FAIL")
+        mark = STYLE.green(t("ok")) if payload.get("ok") else STYLE.red(t("fail"))
         print(STYLE.dim(f"     [{mark}] {payload.get('summary', '')[:120]}"))
     elif kind == "repair":
-        print(STYLE.yellow(f"  repaired: {payload.get('detail')}"))
+        print(STYLE.yellow(t("repaired", detail=payload.get("detail"))))
     elif kind == "warning":
-        print(STYLE.yellow(f"  warning: {payload.get('message')}"))
+        print(STYLE.yellow(t("warning", message=payload.get("message"))))
     elif kind == "error":
-        print(STYLE.red(f"  error: {payload.get('message')}"))
+        # Raw gateway JSON is not an error message; the human line is.
+        print(STYLE.red(t("error", message=humanise_provider_error(str(payload.get("message", ""))))))
     elif kind == "step":
-        print(STYLE.dim(f"-- step {payload.get('index')}/{payload.get('max_steps')}"))
+        print(
+            STYLE.dim(
+                t("step", index=payload.get("index"), max_steps=payload.get("max_steps"))
+            )
+        )
 
 
 def _terminal_confirm(tool: str, args: dict[str, Any], reason: str) -> bool:
     """Ask on the terminal; EOF or anything but yes means no."""
-    print(STYLE.yellow(f"  {tool} needs approval ({reason})"))
-    print(STYLE.dim(f"    args: {json.dumps(args, ensure_ascii=False)[:200]}"))
+    from xli.ui.locale import t
+    from xli.ui.summary import summarise_call
+
+    print(STYLE.yellow(t("needs_approval", tool=tool, reason=reason)))
+    print(STYLE.dim(t("args", args=summarise_call(tool, args))))
     try:
-        answer = input(STYLE.bold("  allow? [y/N] ")).strip().lower()
-    except (EOFError, KeyboardInterrupt):
+        answer = input(STYLE.bold(t("allow_prompt"))).strip().lower()
+    except (EOFError, KeyboardInterrupt, RuntimeError, OSError):
         print()
         return False
-    return answer in ("y", "yes")
+    return answer in ("y", "yes", "д", "да")
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -449,6 +439,26 @@ def cmd_kernel(args: argparse.Namespace) -> int:
         _emit(result, args.json)
         return EXIT_OK
 
+    if args.action == "info":
+        from xli.kernel.methods import build_kernel
+
+        kernel = build_kernel()
+        methods = kernel.list_methods()
+        if args.json:
+            _emit(methods, True)
+            return EXIT_OK
+        print(STYLE.bold(t("kernel_methods", n=len(methods))))
+        current_prefix: str | None = None
+        for spec in methods:
+            name = spec.get("name", "")
+            prefix = name.split(".", 1)[0]
+            if prefix != current_prefix:
+                current_prefix = prefix
+                print(STYLE.magenta(prefix))
+            doc = (spec.get("doc") or "").strip()
+            print(f"  {STYLE.bold(name):<28} {STYLE.dim(doc[:70])}")
+        return EXIT_OK
+
     print(f"unknown kernel action: {args.action}", file=sys.stderr)
     return EXIT_USAGE
 
@@ -530,18 +540,71 @@ def cmd_session(args: argparse.Namespace) -> int:
 
 
 def cmd_skills(args: argparse.Namespace) -> int:
+    """List, search and inspect the skill library.
+
+    SkillsManager returns tuples — (name, category, size) for a listing and
+    (name, category, score) for a search — so print those fields, not the
+    tuple: the user once got ``('foo', 'core', 1234)`` as a "skill list",
+    which told them nothing.
+    """
     from xli.core.skills import SkillsManager
 
     manager = SkillsManager()
+    action = getattr(args, "action", None) or "list"
+
+    if action == "search":
+        query = " ".join(getattr(args, "query", []) or [])
+        if not query:
+            print(t("skills_search_usage"), file=sys.stderr)
+            return EXIT_USAGE
+        rows = manager.search_skills(query)
+        if args.json:
+            _emit(
+                [{"name": name, "category": cat, "score": round(score, 2)} for name, cat, score in rows],
+                True,
+            )
+            return EXIT_OK
+        if not rows:
+            print(STYLE.dim(t("skills_none_found", query=query)))
+            return EXIT_OK
+        for name, cat, score in rows:
+            print(f"  {STYLE.bold(_skill_display(name)):<30} {STYLE.dim(cat):<22} {score:.1f}")
+        print(STYLE.dim(t("skills_found", n=len(rows), query=query)))
+        return EXIT_OK
+
     skills = manager.list_skills()
     if args.json:
-        _emit(skills, True)
-    else:
-        for skill in skills:
-            name = skill.get("name") if isinstance(skill, dict) else str(skill)
-            print(f"  {name}")
-        print(STYLE.dim(f"{len(skills)} skill(s)"))
+        _emit([{"name": name, "category": cat, "size": size} for name, cat, size in skills], True)
+        return EXIT_OK
+    if not skills:
+        print(STYLE.dim(t("skills_none")))
+        return EXIT_OK
+    current_category: str | None = None
+    for name, cat, size in sorted(skills, key=lambda row: (row[1], row[0])):
+        if cat != current_category:
+            current_category = cat
+            print(STYLE.magenta(cat))
+        print(f"  {STYLE.bold(_skill_display(name)):<30} {STYLE.dim(_human_bytes(size))}")
+    print(STYLE.dim(t("skills_count", n=len(skills))))
     return EXIT_OK
+
+
+def _skill_display(name: str) -> str:
+    """The index key is a path ("1password-skill/SKILL.md" →
+    "1password-skill_SKILL"); the user wants the skill's name, not the
+    filename, so collapse the boilerplate suffix."""
+    if name.endswith("_SKILL"):
+        return name[: -len("_SKILL")]
+    return name
+
+
+def _human_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024 or unit == "MB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
@@ -937,17 +1000,50 @@ def cmd_nvim(args: argparse.Namespace) -> int:
     return EXIT_OK if result.get("ok") else EXIT_FAILED
 
 
+def cmd_guides(args: argparse.Namespace) -> int:
+    """`xli guides` — the in-tree walkthroughs, rendered in the terminal."""
+    from xli.guides import list_guides, read_guide
+
+    name = getattr(args, "name", None)
+    action = getattr(args, "action", None) or "list"
+
+    if action == "list":
+        guides = list_guides()
+        if args.json:
+            _emit([{"name": stem, "title": title} for stem, title in guides], True)
+            return EXIT_OK
+        print(STYLE.bold(t("guides_count", n=len(guides))))
+        for stem, title in guides:
+            print(f"  {STYLE.bold(stem):<18} {STYLE.dim(title)}")
+        print(STYLE.dim(t("guides_read_hint")))
+        return EXIT_OK
+
+    text = read_guide(name or "")
+    if text is None:
+        print(t("guides_unknown", name=name), file=sys.stderr)
+        return EXIT_USAGE
+    if args.json:
+        _emit({"name": name, "text": text}, True)
+        return EXIT_OK
+    print(render_markdown_ansi(text))
+    return EXIT_OK
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
     from xli.tui.app import run_tui
+    from xli.ui.locale import configure as configure_locale
 
     config = _load_config(args)
+    configure_locale(config)
     return run_tui(config, initial_task=" ".join(args.task) if args.task else "")
 
 
 def cmd_repl(args: argparse.Namespace) -> int:
     from xli.repl import run_repl
+    from xli.ui.locale import configure as configure_locale
 
     config = _load_config(args)
+    configure_locale(config)
     policy = _build_policy(config, args)
     registry = _build_registry(config, policy, args)
     return run_repl(config, registry=registry, policy=policy, args=args)
@@ -1163,7 +1259,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- kernel
     kernel = sub.add_parser("kernel", help="Cython build of xli.core")
-    kernel.add_argument("action", choices=["preflight", "build", "status", "clean"], nargs="?", default="status")
+    kernel.add_argument(
+        "action",
+        choices=["preflight", "build", "status", "clean", "info"],
+        nargs="?",
+        default="status",
+    )
     kernel.add_argument("targets", nargs="*", help="module names to build (default: all)")
     kernel.add_argument("--force", action="store_true", help="rebuild even if up to date")
     kernel.add_argument("--verbose", "-v", action="store_true")
@@ -1190,8 +1291,9 @@ def build_parser() -> argparse.ArgumentParser:
     # Both take the same optional `action` that `tools` does, so `xli skills`,
     # `xli skills list`, `xli mcp` and `xli mcp list` all behave the way the
     # neighbouring command already taught the user to expect.
-    skills = sub.add_parser("skills", help="list skill definitions")
-    skills.add_argument("action", choices=["list"], nargs="?", default="list")
+    skills = sub.add_parser("skills", help="list and search skill definitions")
+    skills.add_argument("action", choices=["list", "search"], nargs="?", default="list")
+    skills.add_argument("query", nargs="*", help="search words (with `search`)")
     skills.add_argument("--json", action="store_true")
     skills.set_defaults(func=cmd_skills)
 
@@ -1205,6 +1307,13 @@ def build_parser() -> argparse.ArgumentParser:
     nvim.add_argument("--target", help="install into this directory instead of the nvim config")
     nvim.add_argument("--json", action="store_true")
     nvim.set_defaults(func=cmd_nvim)
+
+    # --- guides
+    guides = sub.add_parser("guides", help="read the in-tree walkthroughs")
+    guides.add_argument("action", choices=["list", "read"], nargs="?", default="list")
+    guides.add_argument("name", nargs="?", help="guide name (with `read`)")
+    guides.add_argument("--json", action="store_true")
+    guides.set_defaults(func=cmd_guides)
 
     # --- recommend
     snapshot = sub.add_parser("snapshot", help="create, inspect and roll back file snapshots")

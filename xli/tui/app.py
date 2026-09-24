@@ -24,6 +24,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
+from xli.ui.locale import t
+from xli.ui.text import display_width
 from xli.tui.widgets import (  # noqa: F401  (re-exported for tests)
     separator_row,
     Row,
@@ -67,7 +69,8 @@ class TuiState:
 
 STYLE_ATTRS = (
     "normal", "dim", "bold", "accent", "good", "warn", "bad",
-    "heading", "code", "quote", "link", "italic", "strike",
+    "heading", "heading2", "heading3", "code", "quote", "link",
+    "italic", "strike",
 )
 
 
@@ -82,6 +85,8 @@ def _init_colors() -> dict[str, int]:
         mapping = dict.fromkeys(STYLE_ATTRS, curses.A_NORMAL)
         mapping["bold"] |= curses.A_BOLD
         mapping["heading"] = curses.A_BOLD
+        mapping["heading2"] = curses.A_BOLD
+        mapping["heading3"] = curses.A_BOLD
         mapping["code"] = curses.A_REVERSE
         mapping["link"] = curses.A_UNDERLINE
         return mapping
@@ -89,14 +94,19 @@ def _init_colors() -> dict[str, int]:
     curses.start_color()
     curses.use_default_colors()
     # 256-colour palette; the fallbacks below keep it usable on 8-colour too.
+    # The accent is violet, not cyan — cyan reads as "link / info" in most
+    # terminals, while violet is unmistakably *this app's* colour. Heading
+    # levels step down the violet family so hierarchy survives without size.
     pairs = {
         "dim": (245, -1),
         "bold": (255, -1),
-        "accent": (39, -1),
+        "accent": (135, -1),
         "good": (42, -1),
         "warn": (214, -1),
         "bad": (203, -1),
-        "heading": (75, -1),
+        "heading": (177, -1),
+        "heading2": (141, -1),
+        "heading3": (252, -1),
         "code": (187, -1),
         "quote": (103, -1),
         "link": (81, -1),
@@ -112,6 +122,8 @@ def _init_colors() -> dict[str, int]:
             mapping[name] = curses.A_NORMAL
     mapping["bold"] |= curses.A_BOLD
     mapping["heading"] |= curses.A_BOLD
+    mapping["heading2"] |= curses.A_BOLD
+    mapping["heading3"] |= curses.A_BOLD
     mapping["code"] |= curses.A_REVERSE
     mapping["quote"] |= curses.A_ITALIC if hasattr(curses, "A_ITALIC") else 0
     mapping["link"] |= curses.A_UNDERLINE
@@ -136,6 +148,46 @@ class Tui:
         self.screen = None
         self.attrs: dict[str, int] = {}
         self._agent_task: asyncio.Task | None = None
+
+        # One session per TUI run, kept across tasks, so reopening the app
+        # shows the conversation so far instead of a blank screen that
+        # pretends nothing ever happened.
+        from pathlib import Path
+
+        from xli.session import Session
+
+        try:
+            self.session = Session(root=Path.cwd())
+        except Exception:  # noqa: BLE001 - a broken session store must not kill the UI
+            self.session = None
+        if self.session is not None:
+            self.state.session_id = self.session.session_id
+
+    def _seed_history(self) -> None:
+        """Paint the session so far into the transcript on startup.
+
+        A blank screen that pretends nothing ever happened is exactly the
+        complaint "where are my previous messages" — the history is on disk,
+        so show it.
+        """
+        if self.session is None or self.state.rows:
+            return
+        width = self._width()
+        events = getattr(self.session, "events", []) or []
+        for event in events[-200:]:
+            kind = getattr(event, "kind", "")
+            data = getattr(event, "data", {}) or {}
+            text = str(data.get("content", "")).strip()
+            if not text:
+                continue
+            if kind == "user":
+                self.state.rows.extend(transcript_row("user", {"text": text}, width))
+            elif kind == "assistant":
+                self.state.rows.extend(transcript_row("assistant", {"text": text}, width))
+        if self.state.rows:
+            self.state.rows.extend(
+                transcript_row("note", {"text": t("tui_history_note")}, width)
+            )
 
     # ------------------------------------------------------------------ paint
     def draw(self) -> None:
@@ -179,7 +231,13 @@ class Tui:
             layout.input_top,
             [
                 separator_row(width),
-                input_row(width, " ❯ ", self.state.buffer, mode=self.state.mode),
+                input_row(
+                    width,
+                    " ❯ ",
+                    self.state.buffer,
+                    mode=self.state.mode,
+                    hint="" if (self.state.buffer or self.state.busy) else t("tui_hint"),
+                ),
             ],
         )
         self._paint_rows(
@@ -200,7 +258,7 @@ class Tui:
 
     def _draw_too_small(self, width: int, height: int) -> None:
         self.screen.erase()
-        message = f"terminal too small ({width}x{height}) — need at least 20x8"
+        message = t("tui_small", width=width, height=height)
         self.screen.addnstr(0, 0, message, max(0, width - 1))
         self.screen.refresh()
 
@@ -219,7 +277,10 @@ class Tui:
                     self.screen.addnstr(line, column, text, width - column - 1, attr)
                 except curses.error:
                     pass  # writing the bottom-right cell always raises; ignore it
-                column += len(text)
+                # Cells, not bytes and not codepoints: a wide glyph occupies
+                # two columns, and counting it as one walks every later span
+                # out of alignment.
+                column += display_width(text)
 
     # ------------------------------------------------------------------ input
     def _read_char(self):
@@ -354,7 +415,7 @@ class Tui:
             self.state.show_help = not self.state.show_help
         elif command == "tools":
             names = self.registry.names() if self.registry else []
-            note("tools: " + ", ".join(names))
+            note(t("tui_tools_list", names=", ".join(names)))
         elif command == "mode" and argument in ("auto", "confirm", "readonly"):
             self.state.mode = argument
             self.config.set("permissions.mode", argument)
@@ -362,20 +423,20 @@ class Tui:
                 from xli.permissions.policy import Mode
 
                 self.policy.mode = Mode.parse(argument)
-            note(f"permission mode: {argument}")
+            note(t("tui_mode", mode=argument))
         elif command == "model" and argument:
             self.state.model = argument
             self.config.set("provider.model", argument)
-            note(f"model: {argument}")
+            note(t("tui_model", model=argument))
         elif command == "session":
-            note(f"session: {self.state.session_id or '(none)'}")
+            note(t("tui_session", session=self.state.session_id or "(none)"))
         elif command == "clear":
             self.state.rows = []
             self.state.scroll = 0
         elif command in ("quit", "exit"):
             raise SystemExit(0)
         else:
-            note(f"unknown command: /{command} — try /help")
+            note(t("tui_unknown_cmd", command=command))
 
         self.draw()
 
@@ -400,7 +461,7 @@ class Tui:
         self.state.rows.extend(
             transcript_row(
                 "note",
-                {"text": f"{tool}: {'approved' if approved else 'refused'}"},
+                {"text": f"{tool}: {t('tui_approved') if approved else t('tui_refused')}"},
                 self._width(),
             )
         )
@@ -438,7 +499,7 @@ class Tui:
 
     def _run_task(self, task: str) -> None:
         if self._agent_task is not None and not self._agent_task.done():
-            self.append_event("warning", {"message": "already working — wait for it to finish"})
+            self.append_event("warning", {"message": t("tui_already")})
             return
 
         async def runner() -> None:
@@ -447,7 +508,7 @@ class Tui:
             from xli.tools.registry import default_registry
 
             registry = self.registry or default_registry(policy=self.policy)
-            session = Session()
+            session = self.session or Session()
             self.state.session_id = session.session_id
             self.state.busy = True
             self.draw()
@@ -531,6 +592,7 @@ def _curses_main(stdscr, app: Tui, initial_task: str) -> int:
     app.attrs = _init_colors()
     curses.curs_set(0)
     stdscr.keypad(True)
+    app._seed_history()
     app.draw()
     return asyncio.run(app.run_async(initial_task))
 

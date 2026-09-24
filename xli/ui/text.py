@@ -20,6 +20,7 @@ Width property, narrowed to the ranges that actually occur.
 from __future__ import annotations
 
 import unicodedata
+from typing import Any
 
 #: Ranges whose characters occupy two terminal cells.
 #: East Asian Wide (W) and Fullwidth (F), plus emoji presentation.
@@ -198,3 +199,21 @@ def split_cells(text: str, width: int) -> list[str]:
     if current:
         chunks.append(current)
     return chunks or [""]
+
+
+def json_dumps(value: Any, limit: int = 300) -> str:
+    """Serialise for logs. Truncation keeps an ASCII ``"..."`` suffix.
+
+    This is a serialisation helper, not a display helper, so it deliberately
+    avoids the typographic ellipsis: log lines and nvim payloads are consumed
+    by things that should not have to assume UTF-8.
+    """
+    import json
+
+    try:
+        text = json.dumps(value, ensure_ascii=False, indent=None, separators=(",", ":"))
+    except (TypeError, ValueError):
+        text = str(value)
+    if display_width(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."

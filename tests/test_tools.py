@@ -182,7 +182,9 @@ class TestRegistry:
         registry.register_many(builtin_tools())
         assert registry.has("read")
         assert "write" in registry
-        assert len(registry) == 9
+        assert "think" in registry
+        # 10 built-ins: read write edit ls glob grep bash git todo think
+        assert len(registry) == 10
 
     def test_duplicate_registration_rejected_unless_replace(self):
         registry = ToolRegistry()

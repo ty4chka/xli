@@ -178,6 +178,16 @@ class Agent:
         return prompt
 
     @property
+    def known_tools(self) -> set[str]:
+        """Every registered tool name, so the parser can recognise untagged
+        call JSON the model wrote as plain text and execute it instead of
+        showing the user a blob of JSON as if it were an answer."""
+        try:
+            return set(self.registry.names(enabled_only=False))
+        except Exception:  # noqa: BLE001 - parsing must work even without a registry
+            return set()
+
+    @property
     def skills_context(self) -> str:
         """Cached skills block, resolved once per agent."""
         if self._skills is None:
@@ -231,7 +241,7 @@ class Agent:
                 self.emit("error", message=final_text)
                 break
 
-            parsed: ParsedResponse = parse_response(raw or "")
+            parsed: ParsedResponse = parse_response(raw or "", known_tools=self.known_tools)
             repairs.extend(parsed.repairs)
 
             if parsed.text:

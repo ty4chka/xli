@@ -67,6 +67,7 @@ exclude = ["tests*"]
 
 [tool.setuptools.package-data]
 "xli.skills" = ["*.md", "**/*.md", "**/*.html", "**/*.js", "**/*.cjs", "**/*.sh"]
+"xli.guides" = ["*.md"]
 "xli.nvim" = ["plugin_root/lua/xli/*.lua", "plugin_root/plugin/*.lua"]
 
 [tool.black]

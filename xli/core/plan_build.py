@@ -40,9 +40,9 @@ class ModeContext:
 #: can_use_tool() denied ls, glob, grep, git and todo in plan mode and ls, glob,
 #: grep, git and todo in build mode. tests/test_plan_build.py pins every name
 #: here against the live registry so this cannot drift again.
-PLAN_TOOLS: list[str] = ["read", "ls", "glob", "grep", "todo"]
+PLAN_TOOLS: list[str] = ["read", "ls", "glob", "grep", "todo", "think"]
 BUILD_TOOLS: list[str] = [
-    "read", "ls", "glob", "grep", "todo", "write", "edit", "bash", "git",
+    "read", "ls", "glob", "grep", "todo", "think", "write", "edit", "bash", "git",
 ]
 
 

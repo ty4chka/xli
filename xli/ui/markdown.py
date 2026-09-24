@@ -38,6 +38,8 @@ BAD = "bad"
 CODE = "code"
 QUOTE = "quote"
 HEADING = "heading"
+HEADING2 = "heading2"
+HEADING3 = "heading3"
 LINK = "link"
 ITALIC = "italic"
 STRIKE = "strike"
@@ -432,9 +434,19 @@ def render_rows(markdown: str, width: int, *, indent: int = 0) -> list[Row]:
 
     for block in parse(markdown):
         if block.kind == "heading":
-            prefix = "▌" if block.level <= 2 else "▐"
+            # Levels must be tellable apart at a glance: h1 is the violet bar,
+            # h2 a softer purple, h3+ plain bold — a document whose headings
+            # all wear one colour has no hierarchy on screen.
+            if block.level == 1:
+                prefix, style = "▌", HEADING
+            elif block.level == 2:
+                prefix, style = "▐", HEADING2
+            else:
+                prefix, style = "│", HEADING3
             spans: Row = [(f"{gutter}{prefix} ", ACCENT)]
-            spans += [(t, HEADING) for t, _ in (block.inline or inline_spans(block.text))]
+            spans += [
+                (t, style) for t, _ in (block.inline or inline_spans(block.text))
+            ]
             for row in wrap_row(spans, width):
                 emit(row)
 

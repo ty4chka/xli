@@ -107,7 +107,7 @@ def json_spans(text: str) -> list[tuple[int, int]]:
             if depth == 0:
                 start = index
             depth += 1
-        elif char == "}":
+        elif char == "}":  # noqa: SIM102 - the append must only fire on the brace that CLOSED a span
             if depth > 0:
                 depth -= 1
                 if depth == 0 and start >= 0:
@@ -201,7 +201,64 @@ def extract_tool_payloads(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
-def parse_response(text: str) -> ParsedResponse:
+#: The only keys a tool-call object ever carries. When no tool catalogue is
+#: available to validate names against, an untaged JSON object is accepted as
+#: a call only if its keys stay inside this set — prose that merely *shows*
+#: JSON almost always carries other keys, so this kills the false positives.
+_CALL_KEYS = frozenset({"name", "tool", "args", "arguments", "params"})
+
+
+def extract_bare_calls(
+    prose: str, known_tools: set[str] | None = None
+) -> tuple[list[ToolCall], str, list[str]]:
+    """Pull tool-call JSON the model wrote *without* the ``<tool>`` wrapper.
+
+    Weaker models (and stronger ones on bad days) emit ``{"name": "read",
+    "args": {...}}`` as plain text. Without this fallback that JSON reaches
+    the user verbatim and the loop stops with ``no_tool_calls`` — the single
+    most confusing failure an agent can show. Returns the calls, the prose
+    with the call objects removed, and the repairs to report.
+
+    With `known_tools` a candidate's name must be a registered tool; without
+    it the object's keys must be a subset of the call shape.
+    """
+    calls: list[ToolCall] = []
+    repairs: list[str] = []
+    if "{" not in prose:
+        return calls, prose, repairs
+
+    removed: list[tuple[int, int]] = []
+    for start, end in json_spans(prose):
+        payload = prose[start:end]
+        try:
+            value, _repairs = loads_lenient(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        name = value.get("name") or value.get("tool")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        args = value.get("args") or value.get("arguments") or value.get("params") or {}
+        if not isinstance(args, dict):
+            continue
+        if known_tools is not None:
+            if name not in known_tools:
+                continue
+        elif set(value) - _CALL_KEYS:
+            continue
+
+        calls.append(ToolCall(name=name.strip(), args=args, raw=payload))
+        removed.append((start, end))
+        repairs.append(f"extracted an untagged tool call ({name.strip()})")
+
+    for start, end in reversed(removed):
+        prose = prose[:start] + prose[end:]
+
+    return calls, prose.strip(), repairs
+
+
+def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedResponse:
     """Parse a complete model turn into text + tool calls + done marker."""
     repairs: list[str] = []
     body, fenced = strip_fences(text)
@@ -211,7 +268,7 @@ def parse_response(text: str) -> ParsedResponse:
     calls: list[ToolCall] = []
     spans = extract_tool_payloads(body)
 
-    for payload, start, end in spans:
+    for payload, start, _end in spans:
         payload = payload.strip()
         if not payload:
             repairs.append("ignored an empty <tool> block")
@@ -251,7 +308,7 @@ def parse_response(text: str) -> ParsedResponse:
 
     # Prose is everything outside the tool blocks and the done marker.
     prose = body
-    for payload, start, end in reversed(spans):
+    for _payload, start, end in reversed(spans):
         prose = prose[:start] + prose[end:]
 
     done_text = ""
@@ -269,6 +326,10 @@ def parse_response(text: str) -> ParsedResponse:
             prose = prose[:done_at]
             done = True
             repairs.append("closed an unterminated <done> tag")
+
+    bare, prose, bare_repairs = extract_bare_calls(prose, known_tools)
+    calls.extend(bare)
+    repairs.extend(bare_repairs)
 
     return ParsedResponse(
         text=prose.strip(), calls=calls, done=done, done_text=done_text, repairs=repairs
@@ -294,7 +355,7 @@ class StreamParser:
         complete = [s for s in spans if s[0] != "" or True]
 
         fresh: list[ToolCall] = []
-        for index, (payload, _start, end) in enumerate(complete):
+        for index, (payload, _start, _end) in enumerate(complete):
             if index < self._emitted:
                 continue
             # The final span may be unterminated (stream still running).
@@ -311,13 +372,13 @@ class StreamParser:
     def pending(self) -> str:
         """Text buffered so far, with completed tool blocks removed."""
         prose = self._buffer
-        for payload, start, end in reversed(extract_tool_payloads(prose)):
+        for _payload, start, end in reversed(extract_tool_payloads(prose)):
             prose = prose[:start] + prose[end:]
         return prose.strip()
 
-    def finish(self) -> ParsedResponse:
+    def finish(self, *, known_tools: set[str] | None = None) -> ParsedResponse:
         """Parse everything remaining, including a trailing done marker."""
-        result = parse_response(self._buffer)
+        result = parse_response(self._buffer, known_tools=known_tools)
         # Only report calls we have not already handed out.
         result.calls = result.calls[self._emitted :] if self._emitted else result.calls
         return result

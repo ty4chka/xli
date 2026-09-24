@@ -1,191 +1,224 @@
 # XLI
 
-An autonomous coding agent with a JSON-RPC kernel, an optional Cython-compiled
-core, and three frontends: a CLI, a full-screen TUI, and a Neovim plugin.
+Автономный кодовый агент с JSON-RPC ядром, опциональным Cython-ядром и тремя
+фронтендами: CLI, полноэкранный TUI и плагин для Neovim. Интерфейс — на русском
+из коробки (`ui.lang` переключает на английский).
 
 ```
-xli fix the failing tests in ./api and show me what changed
+xli почини падающие тесты в ./api и покажи, что изменилось
 ```
 
 ---
 
-## Why the shape it has
+## Почему он так устроен
 
-Everything is built around one decision: **the agent is a server, the interfaces
-are clients.**
+Одно решение лежит в основе всего: **агент — это сервер, интерфейсы — клиенты.**
 
 ```
   ┌──────────┐  ┌──────────┐  ┌──────────────┐
-  │   CLI    │  │   TUI    │  │ Neovim (Lua) │      ← presentation only
+  │   CLI    │  │   TUI    │  │ Neovim (Lua) │      ← только отображение
   └────┬─────┘  └────┬─────┘  └──────┬───────┘
        │             │               │
        │      JSON-RPC 2.0 / ndjson  │
        └─────────────┼───────────────┘
                      ▼
             ┌─────────────────┐
-            │   xli kernel    │   agent loop · tools · permissions
-            │  (serve/stdio)  │   sessions · config · Cython core
+            │   xli kernel    │   цикл агента · инструменты · права
+            │  (serve/stdio)  │   сессии · конфиг · Cython-ядро
             └─────────────────┘
 ```
 
-That is what makes a Go, Rust, or web frontend possible later without rewriting
-the agent: they speak the same bytes the Neovim plugin already speaks. Run
-`xli serve` and talk to it.
+Это делает возможным фронтенд на Go, Rust или в вебе без переписывания агента:
+они говорят теми же байтами, что уже говорит плагин Neovim. `xli serve` — и
+разговаривайте.
 
 ---
 
-## Install
+## Установка
 
 ```bash
 pip install -e .
-xli doctor          # what is present, what is missing
+xli doctor          # что есть, чего не хватает
 ```
 
-Python 3.10+. `httpx` for the providers, `Cython` + a C compiler only if you
-want the compiled kernel.
+Python 3.10+. `httpx` для провайдеров; `Cython` + C-компилятор — только если
+нужно собранное ядро.
+
+Ключ провайдера — в окружении:
+
+```bash
+export OPENAI_API_KEY="sk-…"
+xli run "прочитай README.md и сделай резюме"
+```
 
 ---
 
-## Commands
+## Команды
 
-| Command | What it does |
+| Команда | Что делает |
 |---|---|
-| `xli <task>` | run one task and exit |
-| `xli repl` | interactive line interface |
-| `xli tui` | full-screen interface |
-| `xli serve` | JSON-RPC kernel (`--unix` for a socket, stdio by default) |
+| `xli <задача>` | выполнить задачу и выйти |
+| `xli repl` | построчный интерактивный интерфейс |
+| `xli tui` | полноэкранный интерфейс |
+| `xli serve` | JSON-RPC ядро (`--unix` для сокета, stdio по умолчанию) |
 | `xli config` | `list` · `get` · `set` · `path` |
-| `xli kernel` | `preflight` · `build` · `status` · `clean` |
+| `xli kernel` | `preflight` · `build` · `status` · `clean` · `info` (все RPC-методы) |
 | `xli tools` | `list` · `schema` · `prompt` · `enable` · `disable` |
 | `xli session` | `list` · `show` · `delete` |
 | `xli plugins` | `list` · `enable` · `disable` · `reload` · `state` · `dispatch` |
-| `xli skills` | list skill definitions |
-| `xli mcp` | list MCP servers |
-| `xli nvim` | install the Neovim plugin |
-| `xli doctor` | environment report |
+| `xli skills` | `list` · `search <слова>` — 290+ скиллов с полнотекстовым поиском |
+| `xli mcp` | список MCP-серверов |
+| `xli nvim` | установить плагин Neovim |
+| `xli guides` | встроенные гайды: `list` · `read <имя>` |
+| `xli doctor` | отчёт об окружении |
 
-Exit codes are meaningful: `0` success, `1` the task failed, `2` bad usage,
-`3` the environment is broken. Every listing command takes `--json`.
+Коды выхода осмысленны: `0` успех, `1` задача не удалась, `2` неверный вызов,
+`3` сломано окружение. У всех списков есть `--json`.
 
 ---
 
-## Permissions
+## Как выглядит работа
 
-The agent never decides for itself whether it may touch your machine.
+Вызовы инструментов — человекочитаемые строки, а не JSON:
 
-| Mode | Behaviour |
+```
+  -> read src/main.py c 340 +20
+     [ок] 240 строк
+  ∴ сначала смотрю конфиг, потом решаю
+```
+
+`think` — инструмент размышления: модель раскладывает мысли вслух, и вы видите
+это отдельной курсивной строкой в CLI, REPL и TUI. Если модель попытается
+«ответить» JSON-вызовом инструмента текстом, парсер выцепит вызов, исполнит его
+и уберёт болванку из ответа — JSON как ответ вы не увидите.
+
+Ошибки провайдера переводятся на человеческий язык: не стена JSON шлюза, а
+«у провайдера кончились кредиты» или «провайдер молчал 120 с».
+
+---
+
+## Права
+
+Агент никогда сам не решает, можно ли ему трогать вашу машину.
+
+| Режим | Поведение |
 |---|---|
-| `auto` | everything runs except what an explicit deny rule blocks |
-| `confirm` | mutations ask first (the default) |
-| `readonly` | mutations refused outright |
+| `auto` | всё запускается, кроме явно запрещённого |
+| `confirm` | изменения спрашивают разрешения (по умолчанию) |
+| `readonly` | изменения отклоняются сразу |
 
 ```bash
 xli config set permissions.mode auto
 xli config set permissions.deny '/etc/*,*.env'
-xli run --deny 'rm -rf *' "clean up build output"
+xli run --deny 'rm -rf *' "почисти артефакты сборки"
 ```
 
-Some commands are refused in every mode — `mkfs`, `dd of=/dev/...`, `shutdown`,
-fork bombs. Others (`sudo`, `curl … | bash`, `git push --force`) always ask.
+Часть команд запрещена в любом режиме — `mkfs`, `dd of=/dev/…`, `shutdown`.
+Иные (`sudo`, `curl … | bash`, `git push --force`) — всегда спрашивают.
 
-The policy is a pure decision function: it returns a verdict and the frontend
-decides how to ask a human. The same policy runs headless in CI and
-interactively in a terminal.
+Политика — чистая функция: она возвращает вердикт, а фронтенд решает, как
+спросить человека. Одна и та же политика работает и headless в CI, и
+интерактивно в терминале.
 
 ---
 
-## The Cython kernel
+## TUI
 
-`xli/core` can be compiled to C extensions. It is optional and it is safe:
+`xli tui` — полноэкранный интерфейс: история прошлых сессий при старте, строки
+размышлений с `∴`, сводки вызовов вместо JSON, статус с шагами/инструментами/
+ошибками/токенами, поле ввода с подсказкой. Клавиши: `Enter` — отправить,
+`↑` — прошлая задача, `^L` — перерисовать, `^C` — выход; на подтверждении
+`y`/`n`/`a`. Палитра — фиолетовая; уровни заголовков в markdown-ответах визуально
+различимы (`▌`, `▐`, `│`).
+
+---
+
+## Ядро Cython
+
+`xli/core` можно собрать в C-расширения. Опционально и безопасно:
 
 ```bash
-xli kernel preflight   # is the toolchain actually there?
-xli kernel build       # compile xli/core into xli/_ckernel/
-xli kernel status      # what is compiled, what is stale
-xli kernel clean       # throw it all away
+xli kernel preflight   # есть ли инструментарий
+xli kernel build       # собрать xli/core в xli/_ckernel/
+xli kernel status      # что собрано, что устарело
+xli kernel clean       # всё выбросить
+xli kernel info        # все RPC-методы ядра с описаниями
 ```
 
-A compiled module is used **only** when its recorded source hash still matches
-the `.py` file *and* it was built for this interpreter. Edit a file and the
-stale `.so` is ignored; switch Python versions and the whole kernel is ignored.
-"Built" can never mean "running yesterday's logic".
+Собранный модуль используется **только** если записанный хеш исходника совпадает
+с `.py` и сборка была под этот интерпретатор. Правите файл — устаревший `.so`
+игнорируется; меняете Python — игнорируется всё ядро. «Собрано» никогда не
+означает «работаем на вчерашней логике».
 
-`preflight` exists because the usual failure is a missing `Python.h`, and the
-gcc message for that is useless unless you already know what it means:
-
-```
-$ xli kernel preflight
-  [     ok] cython: Cython 3.3.0
-  [     ok] compiler: /usr/bin/cc
-  [MISSING] python-headers: Python.h not found in /usr/include/python3.11
-            fix: sudo apt-get install -y python3.11-dev
-  [     ok] setuptools: setuptools 66.1.1
-```
-
-Without the kernel everything still works, just in pure Python.
+Без ядра всё работает, просто на чистом Python.
 
 ---
 
-## Configuration
+## Конфигурация
 
-Dotted keys, layered: defaults → `~/.xli/config.json` → `./.xli/config.json` →
-`XLI_*` environment.
+Точечные ключи, слои: умолчания → `~/.xli/config.json` → `./.xli/config.json` →
+окружение `XLI__*`.
 
 ```bash
 xli config set provider openai
-xli config set provider.model gpt-4o-mini
+xli config set provider.model openai/gpt-5.6-terra
 xli config set agent.max_steps 40
+xli config set ui.lang ru        # ru — по умолчанию; en — английский интерфейс
 xli config list
 ```
 
-Values are validated on write, so a typo fails immediately:
+Значения валидируются при записи — опечатка падает сразу.
 
-```
-$ xli config set permissions.mode autos
-permissions.mode: 'autos' is not one of auto, confirm, readonly
+В окружении разделитель секций — двойное подчёркивание
+(`XLI_PERMISSIONS__MODE=auto`): одинарное не отличить от части имени ключа.
+
+---
+
+## Гайды
+
+```bash
+xli guides              # список
+xli guides read tui     # читать (рендерится как markdown)
 ```
 
-In the environment, a double underscore is the section separator
-(`XLI_PERMISSIONS__MODE=auto`), because a single underscore cannot be told apart
-from part of a key name.
+`quickstart`, `setup`, `tools`, `tui`, `kernel`, `troubleshooting` — живут в
+пакете, поэтому доступны в любой установке, включая телефон.
 
 ---
 
 ## Neovim
 
-With a plugin manager, point at the shipped plugin directory:
+С плагин-менеджером укажите на встроенный каталог плагина:
 
 ```lua
 { dir = "/path/to/xli/xli/nvim/plugin_root",
   config = function() require('xli').setup() end }
 ```
 
-Without one:
+Без него:
 
 ```bash
 xli nvim install
 ```
 
-Then:
-
-| Command | |
+| Команда | |
 |---|---|
-| `:Xli <task>` | run a task in a floating window |
-| `:XliSelection` | send the visual selection |
-| `:XliDiagnostics` | send this line's diagnostics |
+| `:Xli <задача>` | задача в плавающем окне |
+| `:XliSelection` | отправить визуальное выделение |
+| `:XliDiagnostics` | отправить диагностику этой строки |
 | `:XliTools` `:XliStatus` `:XliKernel` `:XliClose` | |
 
-The plugin is pure Lua — no Python at runtime. It spawns `xli serve --unix` on
-demand and talks JSON-RPC to it, so a Neovim crash does not lose the agent's
-work.
+Плагин — чистый Lua, Python в рантайме не нужен. Он поднимает `xli serve --unix`
+по требованию и говорит с ним JSON-RPC, поэтому падение Neovim не теряет работу
+агента.
 
 ---
 
-## Internal plugins (XPI)
+## Внутренние плагины (XPI)
 
-XPI is xli's in-process plugin system — distinct from MCP servers (separate
-processes) and skills (markdown guidance). Drop a package into
-`~/.xli/xpi/<name>/` and the agent calls into it as it works.
+XPI — внутрипроцессная система плагинов xli (в отличие от MCP-серверов —
+отдельных процессов — и скиллов — markdown-подсказок). Положите пакет в
+`~/.xli/xpi/<имя>/`, и агент будет вызывать его по ходу работы.
 
 ```
 ~/.xli/xpi/audit-trail/
@@ -193,77 +226,60 @@ processes) and skills (markdown guidance). Drop a package into
   plugin.py       class AuditTrail(XpiPlugin): ...
 ```
 
-```python
-from xli.xpi.base import XpiPlugin
-
-class AuditTrail(XpiPlugin):
-    def on_tool_call(self, context):      # {name, args}
-        ...
-    def on_agent_end(self, context):      # {ok, summary, steps, stopped_reason}
-        ...
-```
-
-Hooks: `on_load`, `on_unload`, `on_agent_start`, `on_tool_call`,
+Хуки: `on_load`, `on_unload`, `on_agent_start`, `on_tool_call`,
 `on_tool_result`, `on_agent_end`, `on_tui_mount`, `on_nvim_attach`,
-`on_headless_start`. Set `"platform": "nvim"` in the manifest to restrict a
-plugin to one frontend.
-
-```bash
-xli plugins list
-xli plugins disable audit-trail
-xli plugins reload audit-trail      # hot reload
-xli plugins state                   # state shared across frontends
-```
-
-A plugin that raises is caught, logged and reported — it will not stop the
-agent, and the other plugins still run. `xli.xpi.state.XpiState` gives plugins
-one persisted key/value store shared by the TUI, Neovim and headless runs.
+`on_headless_start`. Упавший плагин перехватывается, логируется и сообщается —
+агента он не остановит.
 
 ---
 
-## The wire protocol
+## Протокол на проводе
 
-Newline-delimited JSON-RPC 2.0. One object per line, UTF-8.
+Newline-delimited JSON-RPC 2.0. Один объект на строку, UTF-8.
 
 ```jsonc
-// request
-{"jsonrpc":"2.0","id":1,"method":"agent.run","params":{"task":"fix the tests"}}
-// notification, streamed while it works
+// запрос
+{"jsonrpc":"2.0","id":1,"method":"agent.run","params":{"task":"почини тесты"}}
+// уведомление, стримится во время работы
 {"jsonrpc":"2.0","method":"agent.tool_call","params":{"name":"read","args":{...}}}
-// response
+// ответ
 {"jsonrpc":"2.0","id":1,"result":{"ok":true,"stopped_reason":"done",...}}
 ```
 
-Start with `hello` and you are told whether your protocol version matches.
-`rpc.methods` lists everything (`agent.*`, `tools.*`, `config.*`, `kernel.*`, `session.*`, `plugins.*`, `doctor`). See `xli/kernel/methods.py` for the map and
-`xli/kernel/protocol.py` for the error codes.
+Начните с `hello` — ядро скажет, совпадает ли версия протокола. `xli kernel info`
+перечисляет все методы (`agent.*`, `tools.*`, `config.*`, `kernel.*`,
+`session.*`, `plugins.*`, `doctor`).
 
 ---
 
-## Development
+## Разработка
 
 ```bash
-pytest -q            # 395 tests
+env -u XLI_CONFIG_DIR pytest -q     # 1200+ тестов
 ruff check xli tests
 ```
 
-The TUI is testable because layout is pure: `xli/tui/widgets.py` returns rows
-of `(text, style)` spans and knows nothing about curses, which is the thin
-adapter in `xli/tui/app.py`.
+TUI тестируем, потому что разметка чиста: `xli/tui/widgets.py` возвращает строки
+из `(текст, стиль)` спанов и ничего не знает про curses, который живёт тонким
+адаптером в `xli/tui/app.py`. Слова интерфейса живут в `xli/ui/locale.py`,
+сводки вызовов — в `xli/ui/summary.py`, ANSI-рендер markdown — в
+`xli/ui/ansi.py`: одна таблица на все фронтенды, а не охота за print'ами.
 
-## Layout
+## Устройство
 
 ```
-xli/kernel/     JSON-RPC protocol, server, transports, method map
-xli/agent.py    the model/tool loop
-xli/tools/      tool registry and the built-in tools
-xli/permissions/ policy engine
-xli/parse/      model output -> tool calls, with repair
-xli/session/    append-only conversation history
-xli/manager/    config and the Cython build
-xli/accel.py    import hook for the compiled kernel
-xli/tui/        full-screen interface
-xli/xpi/        internal plugin system (in-process, lifecycle hooks)
-xli/nvim/       plugin installer + the Lua plugin it ships
-xli/cli.py      command line
+xli/kernel/     JSON-RPC протокол, сервер, транспорты, карта методов
+xli/agent.py    цикл модель/инструменты
+xli/tools/      реестр инструментов и встроенные инструменты (10, с think)
+xli/permissions/ движок политики
+xli/parse/      вывод модели -> вызовы инструментов, с починкой
+xli/session/    приращиваемая история диалогов
+xli/manager/    конфиг и сборка Cython
+xli/accel.py    импорт-хук собранного ядра
+xli/tui/        полноэкранный интерфейс
+xli/ui/         общий словарь UI: локаль, сводки, markdown, ANSI
+xli/guides/     встроенные гайды (xli guides)
+xli/xpi/        внутренняя система плагинов (in-process, хуки жизненного цикла)
+xli/nvim/       установщик плагина + сам Lua-плагин
+xli/cli.py      командная строка
 ```

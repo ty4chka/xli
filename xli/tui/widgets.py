@@ -16,8 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from xli.ui.locale import t
 from xli.ui.markdown import render_rows as md_rows
-from xli.ui.text import display_width, truncate as truncate_cells
+from xli.ui.summary import summarise_call
+from xli.ui.text import display_width, json_dumps as _json_dumps, truncate as truncate_cells
 
 # ---------------------------------------------------------------- styles
 NORMAL = "normal"
@@ -28,6 +30,8 @@ GOOD = "good"
 WARN = "warn"
 BAD = "bad"
 HEADING = "heading"
+HEADING2 = "heading2"
+HEADING3 = "heading3"
 CODE = "code"
 QUOTE = "quote"
 LINK = "link"
@@ -59,6 +63,9 @@ GUTTER = {
     "error": ("▌", BAD),
     "step": ("·", DIM),
     "note": ("·", DIM),
+    #: A `think` tool call: the agent talking to itself, worth showing but
+    #: never to be mistaken for output or for speech to the user.
+    "thought": ("∴", QUOTE),
 }
 
 
@@ -229,7 +236,7 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
 
     if kind == "user":
         return _wrap(
-            gutter + [span("you ", ACCENT), span(str(payload.get("text", "")))], width
+            gutter + [span(t("tui_you"), ACCENT), span(str(payload.get("text", "")))], width
         )
 
     if kind == "assistant":
@@ -247,12 +254,18 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
 
     if kind == "tool_call":
         name = str(payload.get("name", ""))
-        args = _compact_args(payload.get("args") or {})
-        return _wrap(gutter + [span(f"{name} ", BOLD), span(args, DIM)], width)
+        args = payload.get("args") or {}
+        if name == "think":
+            # The agent's own reasoning gets its own spine marker instead of
+            # looking like an external tool poking at files.
+            thought = str(args.get("thought", "")).strip()
+            return _wrap(_gutter("thought") + [span(thought, ITALIC)], width)
+        line = summarise_call(name, args)
+        return _wrap(gutter + [span(f"{name} ", BOLD), span(line, DIM)], width)
 
     if kind == "tool_result":
         ok = bool(payload.get("ok"))
-        mark = span("ok ", GOOD) if ok else span("FAIL ", BAD)
+        mark = span(t("ok") + " ", GOOD) if ok else span(t("fail") + " ", BAD)
         summary = str(payload.get("summary", ""))
         return _wrap(gutter + [mark, span(summary, DIM)], width)
 
@@ -267,7 +280,17 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
 
     if kind == "step":
         return _wrap(
-            gutter + [span(f"step {payload.get('index')}/{payload.get('max_steps')}", DIM)],
+            gutter
+            + [
+                span(
+                    t(
+                        "tui_step",
+                        index=payload.get("index"),
+                        max_steps=payload.get("max_steps"),
+                    ),
+                    DIM,
+                )
+            ],
             width,
         )
 
@@ -363,21 +386,24 @@ def status_row(
     counters = counters or {}
 
     if busy:
-        state: Row = [span(f" {spinner_frame(tick)} ", ACCENT), span("working ", BOLD)]
+        state: Row = [
+            span(f" {spinner_frame(tick)} ", ACCENT),
+            span(t("tui_working") + " ", BOLD),
+        ]
     else:
-        state = [span(" ● ", GOOD), span("ready ", BOLD)]
+        state = [span(" ● ", GOOD), span(t("tui_ready") + " ", BOLD)]
     if mode:
         state.append(span(f"[{mode}]", MODE_STYLE.get(mode, DIM)))
 
     bits = []
     for key in ("steps", "tools", "errors", "tokens"):
         if key in counters:
-            bits.append(f"{key} {counters[key]}")
+            bits.append(t(f"tui_{key}", n=counters[key]))
     middle: Row = [span(" │ ", DIM)] if bits else []
     if bits:
         middle.append(span(" · ".join(bits), DIM))
 
-    keys = hint or "^C quit · ^L redraw · Enter send · ↑ history"
+    keys = hint or t("tui_keys")
 
     used = _row_width(state) + _row_width(middle) + display_width(keys) + 2
     filler = width - used
@@ -400,17 +426,25 @@ def input_row(
     *,
     cursor_visible: bool = True,
     mode: str = "",
+    hint: str = "",
 ) -> Row:
     """The composition line.
 
     The prompt takes the mode's colour, so a session that has been switched to
     readonly looks different at the point where the user is typing -- which is
-    the moment the distinction actually matters.
+    the moment the distinction actually matters. With an empty buffer the
+    `hint` shows where to type and what the line is for, so the field never
+    looks like dead space.
     """
     prefix = span(prompt, MODE_STYLE.get(mode, ACCENT))
     available = width - display_width(prompt)
-    body = text if display_width(text) <= available else truncate_left(text, available)
-    row: Row = [prefix, span(body)]
+    if text:
+        body_span = span(text if display_width(text) <= available else truncate_left(text, available))
+    elif hint:
+        body_span = span(truncate_cells(hint, available), DIM)
+    else:
+        body_span = span("")
+    row: Row = [prefix, body_span]
     if cursor_visible and _row_width(row) < width:
         row.append(span("▏", ACCENT))
     return _fit(row, width)
@@ -489,30 +523,18 @@ def scroll_limit(total_rows: int, height: int) -> int:
 def approval_rows(tool: str, args: dict[str, Any], reason: str, width: int) -> list[Row]:
     """The modal asking permission for a mutating tool call."""
     rows: list[Row] = []
-    rows.append(_fit([span(f" approve {tool}? ", BOLD)], width))
+    rows.append(_fit([span(t("tui_approve", tool=tool), BOLD)], width))
     rows.append(_fit([span(f" {reason}", WARN)], width))
-    for line in _wrap([span(f" {json_dumps(args)}", DIM)], width):
+    for line in _wrap([span(f" {summarise_call(tool, args)}", DIM)], width):
         rows.append(line)
-    rows.append(_fit([span(" y allow · n refuse · a allow all ", ACCENT)], width))
+    rows.append(_fit([span(t("tui_approve_keys"), ACCENT)], width))
     return rows
 
 
-def json_dumps(value: Any, limit: int = 300) -> str:
-    """Serialise for logs. Truncation keeps an ASCII ``"..."`` suffix.
-
-    This is a serialisation helper, not a display helper, so it deliberately
-    avoids the typographic ellipsis: log lines and nvim payloads are consumed
-    by things that should not have to assume UTF-8.
-    """
-    import json
-
-    try:
-        text = json.dumps(value, ensure_ascii=False, indent=None, separators=(",", ":"))
-    except (TypeError, ValueError):
-        text = str(value)
-    if display_width(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)] + "..."
+# json_dumps lives in xli.ui.text so xli.ui.summary can use it without
+# importing this module back (summary → widgets closed an import cycle). The
+# re-export keeps the historical widgets.json_dumps name working.
+json_dumps = _json_dumps
 
 
 # ------------------------------------------------------------------- help pane
@@ -536,9 +558,32 @@ slash commands
   /quit        exit
 """
 
+HELP_TEXT_RU = """\
+XLI — клавиши
+  Enter        отправить строку
+  Up / Down    история ввода
+  PgUp / PgDn  листать транскрипт
+  Home / End   в начало / в конец транскрипта
+  ^L           перерисовать
+  ^C           выход
+  /help        список slash-команд
+
+slash-команды
+  /help        эта панель
+  /tools       доступные инструменты
+  /mode auto|confirm|readonly
+  /model NAME  сменить модель
+  /session     показать id сессии
+  /clear       очистить транскрипт
+  /quit        выход
+"""
+
 
 def help_rows(width: int) -> list[Row]:
+    from xli.ui.locale import lang
+
+    text = HELP_TEXT_RU if lang() == "ru" else HELP_TEXT
     rows: list[Row] = []
-    for line in HELP_TEXT.splitlines():
+    for line in text.splitlines():
         rows.append(_fit([span(line, DIM if line.startswith(" ") else BOLD)], width))
     return rows

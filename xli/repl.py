@@ -7,8 +7,11 @@ commands. It is intentionally not the TUI — it works over ssh, inside a pipe,
 and in terminals curses cannot drive, which is where most agent sessions
 actually happen.
 
-Slash commands mirror the TUI's, so the two can be swapped without relearning
-anything.
+Everything the user reads comes from the same two places the CLI and the TUI
+read from: `xli.ui.locale.t()` for words and `xli.ui.summary.summarise_call()`
+for tool calls, so the three front ends never drift into three dialects.
+assistant text is rendered through the markdown parser rather than dumped as
+raw source — a heading in the answer looks like a heading here too.
 """
 
 from __future__ import annotations
@@ -16,9 +19,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import shlex
-import sys
 from pathlib import Path
 from typing import Any
+
+from xli.ui.locale import t
+from xli.ui.summary import summarise_call
 
 PROMPT = "❯ "
 
@@ -36,12 +41,29 @@ commands
 anything else is sent to the agent as a task.
 """
 
+HELP_RU = """\
+команды
+  /help                     этот текст
+  /tools                    инструменты, доступные агенту
+  /mode auto|confirm|readonly   режим прав
+  /deny ШАБЛОН              запретить путь (напр. /deny '/etc/*')
+  /model ИМЯ                сменить модель
+  /session                  показать id сессии
+  /clear                    очистить экран
+  /quit                     выход
 
-def _print(text: str = "", *, colour: bool = True) -> None:
-    if not colour or not sys.stdout.isatty():
-        print(text)
-        return
-    print(text)
+всё остальное уходит агенту как задача.
+"""
+
+
+def _help_text() -> str:
+    from xli.ui.locale import lang
+
+    return HELP_RU if lang() == "ru" else HELP
+
+
+def _print(text: str = "", *, end: str = "\n") -> None:
+    print(text, end=end)
 
 
 class Repl:
@@ -61,34 +83,46 @@ class Repl:
         if kind == "assistant":
             text = str(payload.get("text", "")).strip()
             if text:
-                _print(f"\033[32mxli\033[0m {text}")
+                from xli.ui.ansi import render_markdown_ansi
+
+                _print("\033[35mxli\033[0m")
+                _print(render_markdown_ansi(text))
         elif kind == "tool_call":
-            _print(f"\033[2m  -> {payload.get('name')} {payload.get('args')}\033[0m")
+            name = str(payload.get("name", ""))
+            args = payload.get("args") or {}
+            if name == "think":
+                _print(f"\033[3m  * {str(args.get('thought', '')).strip()}\033[0m")
+            else:
+                _print(f"\033[2m  -> {name} {summarise_call(name, args)}\033[0m")
         elif kind == "tool_result":
-            mark = "\033[32mok\033[0m" if payload.get("ok") else "\033[31mFAIL\033[0m"
+            mark = f"\033[32m{t('ok')}\033[0m" if payload.get("ok") else f"\033[31m{t('fail')}\033[0m"
             _print(f"\033[2m     [{mark}] {str(payload.get('summary', ''))[:140]}\033[0m")
         elif kind == "repair":
-            _print(f"\033[33m  repaired: {payload.get('detail')}\033[0m")
+            _print(f"\033[33m{t('repaired', detail=payload.get('detail'))}\033[0m")
         elif kind == "warning":
-            _print(f"\033[33m  warning: {payload.get('message')}\033[0m")
+            _print(f"\033[33m{t('warning', message=payload.get('message'))}\033[0m")
         elif kind == "error":
-            _print(f"\033[31m  error: {payload.get('message')}\033[0m")
+            from xli.ui.locale import humanise_provider_error
+
+            message = humanise_provider_error(str(payload.get("message", "")))
+            _print(f"\033[31m{t('error', message=message)}\033[0m")
 
     # ----------------------------------------------------------------- confirm
     def confirm(self, tool: str, args: dict[str, Any], reason: str) -> bool:
         if self.allow_all:
             return True
-        _print(f"\033[33m  {tool} needs approval ({reason})\033[0m")
-        _print(f"\033[2m    {str(args)[:200]}\033[0m")
+        _print(f"\033[33m{t('needs_approval', tool=tool, reason=reason)}\033[0m")
+        _print(f"\033[2m{t('args', args=summarise_call(tool, args))}\033[0m")
+        yes = ("y", "yes", "д", "да")
         try:
-            answer = input("  allow? [y/N/a=always] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+            answer = input(t("repl_allow_prompt")).strip().lower()
+        except (EOFError, KeyboardInterrupt, RuntimeError, OSError):
             _print()
             return False
-        if answer == "a":
+        if answer in ("a", "в"):
             self.allow_all = True
             return True
-        return answer in ("y", "yes")
+        return answer in yes
 
     # ---------------------------------------------------------------- commands
     def slash(self, line: str) -> bool:
@@ -101,11 +135,11 @@ class Repl:
         argument = parts[1] if len(parts) > 1 else ""
 
         if command == "help":
-            _print(HELP)
+            _print(_help_text())
         elif command == "tools":
             for name in self.registry.names():
                 spec = self.registry.get(name).spec
-                flag = "mutates" if spec.mutates else "read"
+                flag = t("repl_mutates") if spec.mutates else t("repl_read")
                 _print(f"  {name:<10} {flag:<8} {spec.description[:70]}")
         elif command == "mode":
             if argument in ("auto", "confirm", "readonly"):
@@ -113,29 +147,29 @@ class Repl:
 
                 self.policy.mode = Mode.parse(argument)
                 self.config.set("permissions.mode", argument)
-                _print(f"permission mode: {argument}")
+                _print(t("tui_mode", mode=argument))
             else:
-                _print("usage: /mode auto|confirm|readonly")
+                _print(t("repl_mode_usage"))
         elif command == "deny":
             if argument:
                 self.policy.deny.append(argument)
                 _print(f"deny += {argument}")
             else:
-                _print("usage: /deny PATTERN")
+                _print(t("repl_deny_usage"))
         elif command == "model":
             if argument:
                 self.config.set("provider.model", argument)
-                _print(f"model: {argument}")
+                _print(t("tui_model", model=argument))
             else:
-                _print("usage: /model NAME")
+                _print(t("repl_model_usage"))
         elif command == "session":
-            _print(f"session: {self.session.session_id if self.session else '(none)'}")
+            _print(t("tui_session", session=self.session.session_id if self.session else "(none)"))
         elif command == "clear":
             _print("\033[2J\033[H", end="")
         elif command in ("quit", "exit", "q"):
             return False
         else:
-            _print(f"unknown command: /{command} — try /help")
+            _print(t("tui_unknown_cmd", command=command))
         return True
 
     # -------------------------------------------------------------------- loop
@@ -164,8 +198,14 @@ class Repl:
             result = await agent.run(task)
             colour = "\033[32m" if result.ok else "\033[31m"
             _print(f"\n{colour}[{result.stopped_reason}]\033[0m {result.summary}\n")
+            if result.stopped_reason == "provider_error":
+                from xli.ui.locale import humanise_provider_error
+
+                _print("\033[31m  " + humanise_provider_error(result.summary) + "\033[0m")
         except Exception as exc:  # noqa: BLE001 - one bad turn must not end the session
-            _print(f"\033[31m  {type(exc).__name__}: {exc}\033[0m")
+            from xli.ui.locale import humanise_provider_error
+
+            _print(f"\033[31m  {humanise_provider_error(str(exc))}\033[0m")
 
     def loop(self, initial_task: str = "") -> int:
         from xli.providers.base import get_provider
@@ -174,7 +214,8 @@ class Repl:
             try:
                 self.provider = get_provider()
             except ValueError as exc:
-                _print(f"\033[31menvironment: {exc}\033[0m")
+                _print(f"\033[31m{t('environment', exc=exc)}\033[0m")
+                _print(f"\033[2m{t('env_hint')}\033[0m")
                 return 3
 
         _print(
@@ -185,7 +226,7 @@ class Repl:
         while True:
             try:
                 line = input(PROMPT).strip()
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, RuntimeError, OSError):
                 _print()
                 return 0
 
@@ -202,7 +243,7 @@ class Repl:
             try:
                 asyncio.run(self.run_task(line))
             except KeyboardInterrupt:
-                _print("\n\033[33m  interrupted\033[0m")
+                _print(f"\n\033[33m{t('repl_interrupted')}\033[0m")
 
 
 def run_repl(config, *, registry=None, policy=None, args: argparse.Namespace | None = None) -> int:

@@ -509,6 +509,22 @@ def todo(action: str, text: str = "", index: int = 0) -> ToolResult:
     )
 
 
+# ---------------------------------------------------------------------- think
+@tool(
+    "think",
+    "Reason out loud before acting: note a thought without touching anything. "
+    "Use it to plan, weigh options or record a conclusion; the thought is shown "
+    "to the user as reasoning, never as an answer.",
+    [Param("thought", "string", "The thought to record", required=True)],
+    tags=["meta"],
+)
+def think(thought: str) -> ToolResult:
+    text = str(thought).strip()
+    if not text:
+        raise ToolError("think requires a non-empty 'thought'")
+    return ToolResult.success(data={"thought": text}, summary=text[:200])
+
+
 # ----------------------------------------------------------------------- suite
 BUILTIN_TOOLS: list[Tool] = [
     read_file,
@@ -520,6 +536,7 @@ BUILTIN_TOOLS: list[Tool] = [
     bash,
     git,
     todo,
+    think,
 ]
 
 
