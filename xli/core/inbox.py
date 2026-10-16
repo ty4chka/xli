@@ -7,10 +7,12 @@ Agents coordinate through team_inbox/<project>/<team>/<agent>.jsonl
 import json
 import asyncio
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
+from collections.abc import Callable
+from typing import Any
+from dataclasses import dataclass
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.inbox")
@@ -35,8 +37,27 @@ class InboxMessage:
             "text": self.text,
             "timestamp": self.timestamp,
             "team": self.team,
-            "project": self.project
+            "project": self.project,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "InboxMessage":
+        """Rebuild a message from its on-disk form.
+
+        The wire form uses "from"/"to" (because "from" is a keyword, the field
+        is named from_agent). Constructing with **data therefore raised
+        TypeError on every line, which read_messages swallowed — the inbox
+        wrote messages it could never read back.
+        """
+        return cls(
+            id=data["id"],
+            from_agent=data.get("from") or data.get("from_agent", ""),
+            to_agent=data.get("to") or data.get("to_agent", ""),
+            text=data.get("text", ""),
+            timestamp=data.get("timestamp", ""),
+            team=data.get("team", "default"),
+            project=data.get("project", "default"),
+        )
 
 
 class TeamInbox:
@@ -45,10 +66,10 @@ class TeamInbox:
     def __init__(self, project: str = "default", team: str = "default"):
         self.project = project
         self.team = team
-        self.base_dir = Path.home() / ".xli" / "team_inbox" / project / team
+        self.base_dir = xli_path("team_inbox", project, team)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self._callbacks: Dict[str, List[callable]] = {}
-        self._watches: Dict[str, asyncio.Task] = {}
+        self._callbacks: dict[str, list[Callable[[InboxMessage], Any]]] = {}
+        self._watches: dict[str, asyncio.Task] = {}
 
     def _get_inbox_path(self, agent: str) -> Path:
         """Get inbox file for agent"""
@@ -71,7 +92,7 @@ class TeamInbox:
         with open(inbox_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(msg.to_dict(), ensure_ascii=False) + "\n")
 
-        logger.log_structured("INFO", "inbox", 
+        logger.log_structured("INFO", "inbox",
                              f"Message from {from_agent} to {to_agent}",
                              {"text": text[:100]})
 
@@ -85,58 +106,80 @@ class TeamInbox:
 
         return msg
 
-    async def broadcast(self, from_agent: str, text: str, exclude: List[str] = None):
-        """Broadcast message to all agents"""
+    async def broadcast(self, from_agent: str, text: str, exclude: list[str] = None):
+        """Send to every agent that already has an inbox.
+
+        Returns the messages sent. This used to return None, so a caller could
+        not tell "broadcast to nobody" from "broadcast to everyone" — and had
+        no way to report who was reached.
+        """
         exclude = exclude or []
 
-        # Find all agents
-        agents = []
-        for f in self.base_dir.glob("*.jsonl"):
-            agent_name = f.stem
-            if agent_name != from_agent and agent_name not in exclude:
-                agents.append(agent_name)
+        agents = [
+            f.stem
+            for f in sorted(self.base_dir.glob("*.jsonl"))
+            if f.stem != from_agent and f.stem not in exclude
+        ]
 
-        # Send to all
+        sent = []
         for agent in agents:
-            await self.send(from_agent, agent, text)
+            sent.append(await self.send(from_agent, agent, text))
+        return sent
 
-    def read_messages(self, agent: str, since: str = None, limit: int = 50) -> List[InboxMessage]:
+    def read_messages(self, agent: str, since: str = None, limit: int = 50) -> list[InboxMessage]:
         """Read messages for agent"""
         inbox_path = self._get_inbox_path(agent)
         if not inbox_path.exists():
             return []
 
         messages = []
+        skipped = 0
         try:
-            with open(inbox_path, "r", encoding="utf-8") as f:
+            with open(inbox_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
                     try:
                         data = json.loads(line)
-                        if since and data.get("timestamp", "") < since:
-                            continue
-                        messages.append(InboxMessage(**data))
-                    except:
-                        pass
-        except:
-            pass
+                    except json.JSONDecodeError:
+                        # A torn final line from a crashed writer is normal for
+                        # append-only JSONL; skip it, keep the rest.
+                        skipped += 1
+                        continue
+                    try:
+                        msg = InboxMessage.from_dict(data)
+                    except (KeyError, TypeError) as exc:
+                        skipped += 1
+                        logger.log_structured(
+                            "WARN", "inbox", f"unreadable message in {agent}: {exc}"
+                        )
+                        continue
+                    if since and msg.timestamp < since:
+                        continue
+                    messages.append(msg)
+        except OSError as exc:
+            logger.log_error("inbox", f"could not read inbox for {agent}", exc=exc)
+            return []
 
+        if skipped:
+            logger.log_structured(
+                "WARN", "inbox", f"skipped {skipped} malformed line(s) in {agent}'s inbox"
+            )
         return messages[-limit:]
 
-    def register_callback(self, agent: str, callback: callable):
+    def register_callback(self, agent: str, callback: Callable[[InboxMessage], Any]):
         """Register callback for incoming messages"""
         if agent not in self._callbacks:
             self._callbacks[agent] = []
         self._callbacks[agent].append(callback)
 
-    def unregister_callback(self, agent: str, callback: callable):
+    def unregister_callback(self, agent: str, callback: Callable[[InboxMessage], Any]):
         """Unregister callback"""
         if agent in self._callbacks:
             self._callbacks[agent] = [cb for cb in self._callbacks[agent] if cb != callback]
 
-    async def watch(self, agent: str, callback: callable, poll_interval: float = 1.0):
+    async def watch(self, agent: str, callback: Callable[[InboxMessage], Any], poll_interval: float = 1.0):
         """Watch inbox for new messages (polling for compatibility)"""
         last_count = 0
 
@@ -162,8 +205,8 @@ class AgentCoordinator:
 
     def __init__(self, inbox: TeamInbox = None):
         self.inbox = inbox or TeamInbox()
-        self.agents: Dict[str, Any] = {}
-        self.active_sessions: Dict[str, bool] = {}
+        self.agents: dict[str, Any] = {}
+        self.active_sessions: dict[str, bool] = {}
 
     def register_agent(self, agent_id: str, agent_instance: Any):
         """Register agent for coordination"""
@@ -179,9 +222,8 @@ class AgentCoordinator:
                              f"{msg.to_agent} received message from {msg.from_agent}")
 
         # Auto-wake if agent is idle
-        if msg.to_agent in self.agents:
-            if not self.active_sessions.get(msg.to_agent, False):
-                await self.wake_agent(msg.to_agent, msg)
+        if msg.to_agent in self.agents and not self.active_sessions.get(msg.to_agent, False):
+            await self.wake_agent(msg.to_agent, msg)
 
     async def wake_agent(self, agent_id: str, msg: InboxMessage):
         """Wake up idle agent with message"""
@@ -212,8 +254,11 @@ class AgentCoordinator:
         # Send task
         await self.inbox.send(from_agent, to_agent, f"TASK: {task}")
 
-        # Wait for response (with timeout)
-        start_time = asyncio.get_event_loop().time()
+        # Wait for response (with timeout). get_running_loop(), not
+        # get_event_loop(): this is inside a coroutine so the loop is already
+        # running, and get_event_loop() is deprecated for that case.
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
         timeout = 120  # 2 minutes
 
         while True:
@@ -222,12 +267,12 @@ class AgentCoordinator:
                 if msg.from_agent == to_agent and "TASK:" not in msg.text:
                     return msg.text
 
-            if asyncio.get_event_loop().time() - start_time > timeout:
+            if loop.time() - start_time > timeout:
                 return "[TIMEOUT: No response from agent]"
 
             await asyncio.sleep(1)
 
-    def get_team_status(self) -> Dict[str, Any]:
+    def get_team_status(self) -> dict[str, Any]:
         """Get status of all agents"""
         return {
             agent_id: {

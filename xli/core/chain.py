@@ -3,16 +3,12 @@
 XLI Chain v4.2 — RESILIENT: skip errors, skills injection, MCP routing, LSP
 """
 
-import asyncio
 import re
-import subprocess
 import json
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
-from datetime import datetime
 from pathlib import Path
 
-from xli.core.logger import StructuredLogger, COLORS, print_step_header, print_agent_output, print_thinking
+from xli.core.logger import StructuredLogger, COLORS, print_step_header
 from xli.providers.base import get_provider
 from xli.core.skills import get_skills_manager
 from xli.core.memory import get_memory
@@ -88,8 +84,8 @@ class ChainResult:
     reviewer: str = ""
     final: str = ""
     success: bool = False
-    files_created: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
+    files_created: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 class XliAgent:
@@ -209,7 +205,7 @@ To RUN command: <tool>{{"name": "bash", "args": {{"command": "..."}}}}</tool>
                 {"role": "user", "content": task}
             ], temperature=0.4)
 
-            self.logger.log_structured("DEBUG", f"agent.{self.name.upper()}", 
+            self.logger.log_structured("DEBUG", f"agent.{self.name.upper()}",
                                       f"Response: {len(response)} chars")
             return response
 
@@ -232,7 +228,7 @@ class XliCore:
         # self.result attributes that vanish when the process exits.
         from xli.core.layers import get_layer_store
         self.layers = layer_store or get_layer_store()
-        self._last_layer: Optional[str] = None
+        self._last_layer: str | None = None
         # Was missing entirely — _run_agent() calls self.memory.save_conversation()
         # on every step, which raised AttributeError before this was ever run
         # end-to-end. get_memory() is a cheap singleton (see memory.py).
@@ -264,7 +260,7 @@ class XliCore:
         self.errors = []
 
     async def run_chain(self, task: str, skip_questions: bool = False,
-                       stream: bool = False, enable_self_correction: Optional[bool] = None,
+                       stream: bool = False, enable_self_correction: bool | None = None,
                        max_correction_iterations: int = 3) -> ChainResult:
         """Run chain with error routing.
 
@@ -343,7 +339,7 @@ class XliCore:
         print_step_header(3, 6, "DEBUGGER", "START")
         error_ctx = ""
         if self.errors:
-            error_ctx = f"\n\n**ERRORS FROM PREVIOUS AGENTS:**\n" + "\n".join(self.errors)
+            error_ctx = "\n\n**ERRORS FROM PREVIOUS AGENTS:**\n" + "\n".join(self.errors)
         debug_task = f"Debug this code:\n{coder_response[:1000]}{error_ctx}"
         debug_response = await self._run_agent("DEBUGGER", debug_task)
         self.result.debugger = debug_response
@@ -467,7 +463,7 @@ class XliCore:
         errors = [l for l in lines if any(ind in l.lower() for ind in ["error", "exception", "failed"])]
         return "\n".join(errors[:5])
 
-    async def _process_tools(self, response: str, layer_id: Optional[str] = None):
+    async def _process_tools(self, response: str, layer_id: str | None = None):
         """Parse and execute tool calls.
 
         If `layer_id` is given, every real file write/edit this call
@@ -475,12 +471,11 @@ class XliCore:
         so LayerStore.checkout() can later replay the actual project state
         that resulted from this step, not just re-show the raw agent text.
         """
-        import json
 
         tool_pattern = r'<tool>\s*(\{.*?\})\s*</tool>'
         matches = re.findall(tool_pattern, response, re.DOTALL)
 
-        step_writes: Dict[str, str] = {}
+        step_writes: dict[str, str] = {}
 
         for match in matches:
             try:
@@ -502,7 +497,7 @@ class XliCore:
             except json.JSONDecodeError:
                 logger.log_structured("WARN", "chain", f"Invalid tool JSON: {match[:100]}")
             except Exception as e:
-                logger.log_error("chain", f"Tool failed", exc=e)
+                logger.log_error("chain", "Tool failed", exc=e)
 
         if layer_id and step_writes:
             try:

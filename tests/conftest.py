@@ -11,6 +11,7 @@ import pytest
 
 from xli.providers.fake import FakeProvider
 from xli.providers import base as provider_base
+from xli.ui import locale
 
 
 @pytest.fixture
@@ -24,3 +25,12 @@ def _reset_provider_singleton():
     provider_base.reset_provider()
     yield
     provider_base.reset_provider()
+
+
+@pytest.fixture(autouse=True)
+def _pin_english_locale():
+    """Tests assert English words ("ok", "FAIL", "working"); the UI default is
+    Russian, so pin the language per test and unpin it afterwards."""
+    locale.set_lang("en")
+    yield
+    locale.set_lang(None)

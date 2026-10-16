@@ -6,15 +6,16 @@ XPI Plugin Manager v4 — загрузка, lifecycle, hot-reload
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from xli.paths import xli_path
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.xpi.manager")
 
-XPI_DIR = Path.home() / ".xli" / "xpi"
+XPI_DIR = xli_path("xpi")
 
 
 @dataclass
@@ -24,8 +25,8 @@ class XpiInfo:
     version: str
     path: Path
     enabled: bool = True
-    loaded_at: Optional[datetime] = None
-    hooks: Dict[str, Any] = field(default_factory=dict)
+    loaded_at: datetime | None = None
+    hooks: dict[str, Any] = field(default_factory=dict)
 
 
 class XpiManager:
@@ -45,11 +46,11 @@ class XpiManager:
         self._initialized = True
 
         XPI_DIR.mkdir(parents=True, exist_ok=True)
-        self.plugins: Dict[str, XpiInfo] = {}
-        self._modules: Dict[str, Any] = {}
+        self.plugins: dict[str, XpiInfo] = {}
+        self._modules: dict[str, Any] = {}
         self._load_all()
 
-        logger.log_structured("INFO", "xpi.manager", 
+        logger.log_structured("INFO", "xpi.manager",
                              f"Loaded {len(self.plugins)} plugins")
 
     def _load_all(self):
@@ -95,11 +96,11 @@ class XpiManager:
 
         logger.log_structured("INFO", "xpi.manager", f"Plugin loaded: {name}")
 
-    def get(self, name: str) -> Optional[XpiInfo]:
+    def get(self, name: str) -> XpiInfo | None:
         """Get plugin info"""
         return self.plugins.get(name)
 
-    def list_plugins(self) -> List[Dict]:
+    def list_plugins(self) -> list[dict]:
         """List all plugins"""
         return [
             {

@@ -3,7 +3,6 @@
 XPI Registry v4 — Реестр активных XPI
 """
 
-from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 from xli.core.logger import StructuredLogger
@@ -24,7 +23,7 @@ class XpiRegistry:
     """Registry of active XPI plugins"""
 
     def __init__(self):
-        self.entries: Dict[str, XpiEntry] = {}
+        self.entries: dict[str, XpiEntry] = {}
         logger.log_structured("INFO", "xpi.registry", "Registry initialized")
 
     def register(self, name: str, version: str, platform: str = "all"):
@@ -38,7 +37,7 @@ class XpiRegistry:
             del self.entries[name]
             logger.log_structured("INFO", "xpi.registry", f"Unregistered: {name}")
 
-    def list_active(self, platform: str = None) -> List[Dict]:
+    def list_active(self, platform: str | None = None) -> list[dict]:
         """List active plugins, optionally filtered by platform"""
         result = []
         for entry in self.entries.values():
@@ -52,6 +51,6 @@ class XpiRegistry:
                 })
         return result
 
-    def get(self, name: str) -> Optional[XpiEntry]:
+    def get(self, name: str) -> XpiEntry | None:
         """Get entry by name"""
         return self.entries.get(name)

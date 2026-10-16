@@ -26,7 +26,6 @@ How it uses layers.py / goal.py:
 
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
 
 from xli.core.chain import XliAgent
 from xli.core.layers import LayerStore, get_layer_store
@@ -41,7 +40,7 @@ logger = StructuredLogger("xli.self_correct")
 class RunResult:
     goal: Goal
     layer_store: LayerStore
-    final_code_layer: Optional[str]
+    final_code_layer: str | None
     passed: bool
 
 
@@ -71,7 +70,7 @@ def _summarize_pytest(output: str, passed: bool) -> str:
 
 class SelfCorrectingChain:
     def __init__(self, coder: XliAgent, debugger: XliAgent,
-                 layer_store: Optional[LayerStore] = None, max_iterations: int = 5):
+                 layer_store: LayerStore | None = None, max_iterations: int = 5):
         self.coder = coder
         self.debugger = debugger
         self.store = layer_store or get_layer_store()

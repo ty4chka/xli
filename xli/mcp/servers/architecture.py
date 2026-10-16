@@ -2,8 +2,8 @@
 # mcp-architecture-cli.py — анализ зависимостей и циклов
 import json
 import sys
-import subprocess
 from pathlib import Path
+from xli.mcp.serverkit import filter_arguments, tool_descriptors
 
 def dependency_graph(directory="."):
     """Построить граф импортов в JSON"""
@@ -23,7 +23,7 @@ def dependency_graph(directory="."):
                         parts = line.split()
                         if len(parts) >= 2:
                             deps.append(parts[1])
-        except:
+        except Exception:
             pass
         if deps:
             imports[name] = deps
@@ -48,7 +48,7 @@ def circular_dependencies(directory="."):
                         parts = line.split()
                         if len(parts) >= 2:
                             deps.append(parts[1])
-        except:
+        except Exception:
             pass
         imports[name] = deps
 
@@ -86,7 +86,7 @@ def handle_request(request):
     if method == "tools/list":
         return {
             "jsonrpc": "2.0",
-            "result": {"tools": [{"name": n} for n in TOOLS.keys()]},
+            "result": {"tools": tool_descriptors(TOOLS)},
             "id": req_id
         }
     elif method == "tools/call":
@@ -94,7 +94,7 @@ def handle_request(request):
         args = request.get("params", {}).get("arguments", {})
         if tool in TOOLS:
             try:
-                res = TOOLS[tool](**args)
+                res = TOOLS[tool](**filter_arguments(TOOLS[tool], args))
                 return {
                     "jsonrpc": "2.0",
                     "result": {"content": [{"type": "text", "text": res}]},

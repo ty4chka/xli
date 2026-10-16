@@ -3,6 +3,7 @@
 import json
 import sys
 import re
+from xli.mcp.serverkit import filter_arguments, tool_descriptors
 
 def analyze_traceback(traceback_text):
     """Анализирует traceback и предлагает исправления"""
@@ -11,7 +12,7 @@ def analyze_traceback(traceback_text):
     error_type = "Unknown"
     file_name = ""
     line_no = ""
-    
+
     for line in lines:
         if "File \"" in line and ".py" in line:
             parts = re.findall(r'File "([^"]+)"', line)
@@ -23,7 +24,7 @@ def analyze_traceback(traceback_text):
         if "Error:" in line or "Exception:" in line:
             error_line = line
             error_type = line.split(':')[0] if ':' in line else line
-    
+
     suggestions = []
     if "ModuleNotFoundError" in error_type:
         module = re.search(r"No module named '(\w+)'", error_line)
@@ -41,7 +42,7 @@ def analyze_traceback(traceback_text):
         suggestions.append("Файл не найден. Проверь путь.")
     else:
         suggestions.append("Проверь логику в указанном месте.")
-    
+
     result = f"Файл: {file_name}\nСтрока: {line_no}\nОшибка: {error_line}\n\nПредложения:\n" + "\n".join(f"- {s}" for s in suggestions)
     return result
 
@@ -54,13 +55,13 @@ def handle_request(req):
     method = req.get("method")
     rid = req.get("id")
     if method == "tools/list":
-        return {"jsonrpc":"2.0","result":{"tools":[{"name":n} for n in TOOLS]},"id":rid}
+        return {"jsonrpc":"2.0","result":{"tools":tool_descriptors(TOOLS)},"id":rid}
     elif method == "tools/call":
         tool = req.get("params",{}).get("name")
         args = req.get("params",{}).get("arguments",{})
         if tool in TOOLS:
             try:
-                res = TOOLS[tool](**args)
+                res = TOOLS[tool](**filter_arguments(TOOLS[tool], args))
                 return {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":res}]},"id":rid}
             except Exception as e:
                 return {"jsonrpc":"2.0","error":{"code":-32000,"message":str(e)},"id":rid}

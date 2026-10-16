@@ -1,12 +1,16 @@
+import os
 import subprocess
 import sys
-import tempfile
-import shutil
 import textwrap
+from pathlib import Path
 
-import pytest
 
 from xli.core.layers import LayerStore
+
+
+# Repo root, so the spawned worker can import `xli` even though it lives in a
+# tmp dir and pytest's sys.path tweaks do not survive into a fresh interpreter.
+REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 WORKER_SCRIPT = textwrap.dedent("""
@@ -33,9 +37,13 @@ def test_concurrent_processes_dont_lose_commits(tmp_path):
     n_commits_each = 20
 
     procs = []
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = REPO_ROOT + (os.pathsep + existing if existing else "")
     for i in range(n_workers):
         p = subprocess.Popen(
-            [sys.executable, str(script), str(store_root), f"worker{i}", str(n_commits_each)]
+            [sys.executable, str(script), str(store_root), f"worker{i}", str(n_commits_each)],
+            env=env,
         )
         procs.append(p)
     for p in procs:

@@ -16,8 +16,6 @@ external layer — see CHANGES.md for the recommended follow-up.
 
 import os
 import subprocess
-import sys
-from typing import Optional
 
 from xli.core.shell_safety import is_shell_command_safe
 from xli.core.logger import StructuredLogger
@@ -51,7 +49,7 @@ def _limits(max_memory_mb: int, cpu_seconds: int):
 def run_guarded_shell(
     command: str,
     timeout: int = 30,
-    cwd: Optional[str] = None,
+    cwd: str | None = None,
     max_memory_mb: int = 512,
 ) -> subprocess.CompletedProcess:
     """Validate then run a shell command with resource limits and a scrubbed env.

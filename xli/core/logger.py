@@ -10,8 +10,28 @@ import sys
 import os
 import traceback
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Any
+from contextlib import contextmanager
+from xli.paths import xli_path
+
+
+_console_muted = False
+
+
+class _ConsoleFilter(logging.Filter):
+    def filter(self, record):
+        return not _console_muted
+
+
+@contextmanager
+def quiet_console():
+    """Curses owns the screen; keep diagnostics in log files while it runs."""
+    global _console_muted
+    previous = _console_muted
+    _console_muted = True
+    try:
+        yield
+    finally:
+        _console_muted = previous
 
 
 # ANSI color codes
@@ -125,7 +145,7 @@ def format_log_line(timestamp: str, level: str, component: str, message: str,
 class StructuredLogger:
     """Structured logging with multiple outputs"""
 
-    _instances: Dict[str, "StructuredLogger"] = {}
+    _instances: dict[str, "StructuredLogger"] = {}
 
     def __new__(cls, name: str):
         if name not in cls._instances:
@@ -138,8 +158,18 @@ class StructuredLogger:
         self._initialized = True
 
         self.name = name
-        self.log_dir = Path.home() / ".xli" / "logs"
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir = xli_path("logs")
+        # Never let logging take the process down. If the log directory cannot
+        # be created — a read-only filesystem, an XLI_CONFIG_DIR pointing
+        # somewhere unwritable, a permissions problem — fall back to console
+        # only instead of raising out of __init__. This used to be an
+        # unconditional mkdir, which was only safe because ~/.xli is nearly
+        # always writable.
+        self.file_logging = True
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.file_logging = False
 
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
@@ -150,25 +180,32 @@ class StructuredLogger:
             datefmt="%H:%M:%S"
         )
 
-        # All logs
-        fh = logging.FileHandler(self.log_dir / "xli.log", encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(formatter)
-        self.logger.addHandler(fh)
+        if self.file_logging:
+            # All logs
+            fh = logging.FileHandler(self.log_dir / "xli.log", encoding="utf-8")
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(formatter)
+            self.logger.addHandler(fh)
 
-        # Errors only
-        eh = logging.FileHandler(self.log_dir / "errors.log", encoding="utf-8")
-        eh.setLevel(logging.ERROR)
-        eh.setFormatter(formatter)
-        self.logger.addHandler(eh)
+            # Errors only
+            eh = logging.FileHandler(self.log_dir / "errors.log", encoding="utf-8")
+            eh.setLevel(logging.ERROR)
+            eh.setFormatter(formatter)
+            self.logger.addHandler(eh)
 
-        # Structured JSONL
-        self.structured_path = self.log_dir / "structured.log"
+            # Structured JSONL
+            self.structured_path = self.log_dir / "structured.log"
+        else:
+            self.structured_path = None
 
         # Console with colors
-        self.use_colors = sys.stdout.isatty() and "NO_COLOR" not in os.environ
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(logging.INFO)
+        self.use_colors = sys.stderr.isatty() and "NO_COLOR" not in os.environ
+        # Diagnostics go to stderr. Anything on stdout is program output that a
+        # caller may pipe or parse (`xli tools schema --json`), and a stray log
+        # line there turns valid JSON into garbage.
+        ch = logging.StreamHandler(sys.stderr)
+        ch.setLevel(getattr(logging, os.environ.get("XLI_LOG_LEVEL", "WARNING").upper(), logging.WARNING))
+        ch.addFilter(_ConsoleFilter())
         ch.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(ch)
 
@@ -186,7 +223,7 @@ class StructuredLogger:
         sys.excepthook = hook
 
     def log_structured(self, level: str, component: str, message: str,
-                       details: Optional[Dict] = None, exc_info: Optional[str] = None):
+                       details: dict | None = None, exc_info: str | None = None):
         """Write structured JSONL log + colored console output"""
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
@@ -201,28 +238,36 @@ class StructuredLogger:
         if exc_info:
             entry["trace"] = exc_info
 
-        try:
-            with open(self.structured_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-        except Exception as e:
-            self.logger.error(f"Failed to write structured log: {e}")
+        if self.structured_path is not None:
+            try:
+                with open(self.structured_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            except OSError as e:
+                # The directory went away or became unwritable. Say so once
+                # through the console handler rather than raising, and stop
+                # trying: a log write must never break the caller.
+                self.structured_path = None
+                self.logger.warning(f"structured logging disabled: {e}")
 
         # Colored console output
         colored_line = format_log_line(timestamp, level, component, message, self.use_colors)
 
-        # Also to standard logger (file only, console gets colored)
-        method = getattr(self.logger, level.lower(), self.logger.info)
+        # Also to standard logger (file only, console gets colored).
+        # logging.Logger.warn() is a deprecated alias — route WARN -> warning.
+        _LEVEL_METHODS = {"WARN": "warning", "FATAL": "critical"}
+        method_name = _LEVEL_METHODS.get(level.upper(), level.lower())
+        method = getattr(self.logger, method_name, self.logger.info)
         method(colored_line)
 
-    def log_error(self, component: str, message: str, exc: Optional[Exception] = None,
-                  details: Optional[Dict] = None):
+    def log_error(self, component: str, message: str, exc: Exception | None = None,
+                  details: dict | None = None):
         """Unified error logging"""
         self._error_count += 1
         exc_str = traceback.format_exc() if exc else None
         self.log_structured("ERROR", component, message, details, exc_str)
         self.logger.error(f"[{component}] {message}", exc_info=exc is not None)
 
-    def log_nvim_error(self, source: str, message: str, details: Optional[Dict] = None):
+    def log_nvim_error(self, source: str, message: str, details: dict | None = None):
         """Log nvim-side errors to shared file"""
         self.log_structured("ERROR", f"nvim.{source}", message, details)
         nvim_err = self.log_dir / "nvim_errors.log"

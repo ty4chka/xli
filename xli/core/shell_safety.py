@@ -15,7 +15,6 @@ obvious bypasses, and gives one place to extend.
 """
 
 import re
-from typing import Optional, Tuple
 
 # Patterns are matched against a whitespace-normalized, lowercased command.
 _BLOCKED_PATTERNS = [
@@ -44,7 +43,7 @@ _FETCH_TOOLS = ("curl", "wget", "nc ", "ncat")
 _CHAIN_OPS = ("|", ";", "&&", "$(", "`")
 
 
-def is_shell_command_safe(command: str) -> Tuple[bool, Optional[str]]:
+def is_shell_command_safe(command: str) -> tuple[bool, str | None]:
     """Check a raw shell command string before it's passed to subprocess.run(shell=True).
 
     Returns (True, None) if the command looks acceptable, else (False, reason).

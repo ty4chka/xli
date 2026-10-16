@@ -4,9 +4,9 @@ XLI Providers Base — AbstractProvider + factory get_provider()
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, Any
+from typing import Any
 
-from xli.core.config import get_config
+from xli.manager.config import get_config
 from xli.core.logger import StructuredLogger
 
 logger = StructuredLogger("xli.providers")
@@ -21,43 +21,69 @@ class AbstractProvider(ABC):
         self.logger = StructuredLogger(f"xli.providers.{self.__class__.__name__.lower()}")
 
     @abstractmethod
-    async def chat(self, messages: List[Dict], temperature: float = 0.4, 
+    async def chat(self, messages: list[dict], temperature: float = 0.4,
                    max_tokens: int = 4000) -> str:
         """Send chat completion request"""
         pass
 
     @abstractmethod
-    async def stream(self, messages: List[Dict], temperature: float = 0.4) -> Any:
+    async def stream(self, messages: list[dict], temperature: float = 0.4) -> Any:
         """Stream chat completion"""
         pass
 
     @abstractmethod
-    async def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         """Get embeddings"""
         pass
 
+
+#: Providers that run locally and need no credentials.
+_NO_KEY_PROVIDERS = frozenset({"ollama", "local"})
 
 # Global provider instance cache
 _provider_instance = None
 
 
-def get_provider() -> AbstractProvider:
-    """Factory: returns configured provider instance"""
+def get_provider(config: Any = None, *, force: bool = False) -> AbstractProvider:
+    """Build (or return the cached) provider for `config`.
+
+    Two defects fixed here:
+
+      * `config` used to be ignored. The function read the module-level
+        get_config() singleton, so a caller that had applied `--provider` to its
+        own Config still got whatever the singleton said — `xli run --provider
+        openai` silently built mistral. Passing a config now works.
+
+      * The cached instance was returned before any of that was consulted, so
+        even with the config honoured, a second call with a different provider
+        returned the first one. `force=True` rebuilds.
+    """
     global _provider_instance
 
-    if _provider_instance is not None:
+    if config is None:
+        config = get_config()
+
+    if _provider_instance is not None and not force:
         return _provider_instance
 
-    config = get_config()
-    provider_name = config.get_default_provider()
+    provider_name = config.default_provider()
 
     logger.log_structured("INFO", "providers", f"Creating provider: {provider_name}")
 
+    # module, class, default model. The model is left None where the provider
+    # class already carries a sensible default.
     provider_classes = {
-        "mistral": ("xli.providers.mistral", "MistralProvider", "mistral-large-latest"),
+        "mistral": ("xli.providers.mistral", "MistralProvider", None),
         "openai": ("xli.providers.openai", "OpenAIProvider", None),
         "anthropic": ("xli.providers.anthropic", "AnthropicProvider", None),
+        "claude": ("xli.providers.anthropic", "AnthropicProvider", None),
         "openrouter": ("xli.providers.openrouter", "OpenRouterProvider", None),
+        "gemini": ("xli.providers.gemini", "GeminiProvider", None),
+        "google": ("xli.providers.gemini", "GeminiProvider", None),
+        # No API key needed, so this is the one provider that works out of the
+        # box against a local `ollama serve`.
+        "ollama": ("xli.providers.ollama", "OllamaProvider", None),
+        "local": ("xli.providers.ollama", "OllamaProvider", None),
     }
 
     if provider_name not in provider_classes:
@@ -65,8 +91,8 @@ def get_provider() -> AbstractProvider:
         raise ValueError(f"Unknown provider: {provider_name}")
 
     module_path, class_name, default_model = provider_classes[provider_name]
-    api_key = config.get_api_key(provider_name)
-    if not api_key:
+    api_key = config.api_key(provider_name)
+    if not api_key and provider_name not in _NO_KEY_PROVIDERS:
         logger.log_structured("ERROR", "providers", f"{provider_name} API key not found")
         raise ValueError(f"{provider_name.upper()}_API_KEY not set in environment")
 
@@ -76,7 +102,26 @@ def get_provider() -> AbstractProvider:
     kwargs = {"api_key": api_key}
     if default_model:
         kwargs["model"] = default_model
-    _provider_instance = provider_cls(**kwargs)
+
+    # A configured model and endpoint override the class defaults. Both are
+    # keyword-only on OpenAICompatibleProvider, and the providers that are not
+    # OpenAI-shaped accept **kwargs, so this is safe for all of them.
+    model = config.model()
+    if model:
+        kwargs["model"] = model
+    base_url = config.base_url()
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    try:
+        _provider_instance = provider_cls(**kwargs)
+    except TypeError as exc:
+        # A provider that takes neither base_url nor model should still build
+        # rather than fail the whole run because of an optional setting.
+        logger.log_error(
+            "providers", f"{provider_name} rejected {sorted(kwargs)}; retrying minimal", exc=exc
+        )
+        _provider_instance = provider_cls(api_key=api_key)
 
     logger.log_structured("INFO", "providers", f"Provider ready: {provider_name}")
     return _provider_instance

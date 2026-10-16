@@ -4,6 +4,7 @@ import json
 import sys
 import ast
 from pathlib import Path
+from xli.mcp.serverkit import filter_arguments, tool_descriptors
 
 def analyze_complexity(directory, threshold=10):
     results = []
@@ -20,7 +21,7 @@ def analyze_complexity(directory, threshold=10):
                     complexity = sum(1 for _ in ast.walk(node))
                     if complexity > threshold:
                         results.append(f"{py_file}:{node.lineno} {node.name} (complexity approx {complexity})")
-        except:
+        except Exception:
             pass
     return "\n".join(results[:20]) or "Сложных функций не найдено"
 
@@ -55,13 +56,13 @@ def handle_request(request):
     method = request.get("method")
     req_id = request.get("id")
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "result": {"tools": [{"name": n} for n in TOOLS.keys()]}, "id": req_id}
+        return {"jsonrpc": "2.0", "result": {"tools": tool_descriptors(TOOLS)}, "id": req_id}
     elif method == "tools/call":
         tool = request.get("params", {}).get("name")
         args = request.get("params", {}).get("arguments", {})
         if tool in TOOLS:
             try:
-                res = TOOLS[tool](**args)
+                res = TOOLS[tool](**filter_arguments(TOOLS[tool], args))
                 return {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": res}]}, "id": req_id}
             except Exception as e:
                 return {"jsonrpc": "2.0", "error": {"code": -32000, "message": str(e)}, "id": req_id}

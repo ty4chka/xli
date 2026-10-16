@@ -4,8 +4,7 @@ XLI Multi-Step Agent Loop v4.3 — FIXED: sub-agents inherit tools, create real 
 """
 
 import json
-import asyncio
-from typing import Dict, List, Optional, Any, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -43,8 +42,8 @@ class Tool:
         self.name = name
         self.description = description
         self.schema = schema
-        self.pre_hooks: List[Callable] = []
-        self.post_hooks: List[Callable] = []
+        self.pre_hooks: list[Callable] = []
+        self.post_hooks: list[Callable] = []
 
     async def execute(self, **kwargs) -> str:
         raise NotImplementedError
@@ -113,7 +112,8 @@ class BashTool(Tool):
             }
         )
     async def execute(self, command: str, timeout: int = 30) -> str:
-        import re, subprocess
+        import re
+        import subprocess
         from xli.core.exec_guard import run_guarded_shell
 
         safe, reason = is_shell_command_safe(command)
@@ -237,7 +237,7 @@ class FileEditTool(Tool):
                 return f"ERROR: File not found: {path}"
             content = p.read_text()
             if old_string not in content:
-                return f"ERROR: String not found"
+                return "ERROR: String not found"
             new_content = content.replace(old_string, new_string, 1)
             p.write_text(new_content)
             print(f"\n{COLORS['GREEN']}✏️  Edited: {path}{COLORS['RESET']}")
@@ -249,7 +249,7 @@ class FileEditTool(Tool):
 class TaskTool(Tool):
     """Delegate to sub-agent — INHERITS parent tools!"""
 
-    def __init__(self, parent_tools: Dict[str, Tool] = None, coordinator=None, provider=None):
+    def __init__(self, parent_tools: dict[str, Tool] = None, coordinator=None, provider=None):
         super().__init__(
             name="task",
             description="Delegate to sub-agent (@coder, @tester, @debugger, @optimizer, @reviewer). Sub-agents inherit ALL tools including write/bash!",
@@ -296,7 +296,7 @@ class TaskTool(Tool):
                 return f"[SUB-AGENT @{agent} ERROR]: {result}\nDelegate to @debugger."
 
             # Count files created by sub-agent
-            files_created = [s.tool_args.get("path") for s in sub.steps 
+            files_created = [s.tool_args.get("path") for s in sub.steps
                            if s.step_type == StepType.TOOL_RESULT and s.tool_name == "write"]
             if files_created:
                 print(f"{COLORS['GREEN']}📁 @{agent} created: {', '.join(files_created)}{COLORS['RESET']}")
@@ -315,9 +315,9 @@ class MultiStepAgent:
         self.name = name
         self.system_prompt = system_prompt
         self.max_steps = max_steps
-        self.tools: Dict[str, Tool] = {}
-        self.steps: List[Step] = []
-        self.history: List[dict] = []
+        self.tools: dict[str, Tool] = {}
+        self.steps: list[Step] = []
+        self.history: list[dict] = []
         self.logger = StructuredLogger(f"multistep.{name}")
         self.idle_count = 0
         self.max_idle = 2
@@ -341,7 +341,7 @@ class MultiStepAgent:
         self.tools[tool.name] = tool
         self.logger.log_structured("DEBUG", "multistep", f"Tool: {tool.name}")
 
-    def get_tools_schema(self) -> List[dict]:
+    def get_tools_schema(self) -> list[dict]:
         return [
             {"name": name, "description": tool.description, "parameters": tool.schema}
             for name, tool in self.tools.items()
@@ -475,7 +475,7 @@ class MultiStepAgent:
 
         return final_answer
 
-    def _extract_tool_call(self, text: str) -> Optional[dict]:
+    def _extract_tool_call(self, text: str) -> dict | None:
         import re
 
         patterns = [

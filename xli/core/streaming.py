@@ -5,7 +5,7 @@ XLI Streaming v4 — Chunks for all UI platforms
 
 import asyncio
 from dataclasses import dataclass
-from typing import Optional, Callable
+from collections.abc import Callable
 
 from xli.core.logger import StructuredLogger
 
@@ -17,21 +17,21 @@ class StreamChunk:
     """Single chunk of streamed content"""
     content: str
     is_final: bool = False
-    metadata: Optional[dict] = None
+    metadata: dict | None = None
 
 
 class StreamingHandler:
     """Base streaming handler"""
-    
+
     def __init__(self):
         self.chunks = []
         self.complete = False
         self._callbacks = []
-    
+
     def on_chunk(self, callback: Callable[[StreamChunk], None]):
         """Register chunk callback"""
         self._callbacks.append(callback)
-    
+
     async def emit(self, chunk: StreamChunk):
         """Emit chunk to all callbacks"""
         self.chunks.append(chunk)
@@ -43,11 +43,11 @@ class StreamingHandler:
                     cb(chunk)
             except Exception as e:
                 logger.log_error("streaming", "Callback failed", exc=e)
-    
+
     def get_full_text(self) -> str:
         """Get complete streamed text"""
         return "".join(c.content for c in self.chunks)
-    
+
     def mark_complete(self):
         """Mark streaming as complete"""
         self.complete = True
@@ -55,11 +55,11 @@ class StreamingHandler:
 
 class TuiStreamingHandler(StreamingHandler):
     """Streaming handler for Textual TUI"""
-    
+
     def __init__(self, widget=None):
         super().__init__()
         self.widget = widget  # Textual Static widget
-    
+
     async def emit(self, chunk: StreamChunk):
         await super().emit(chunk)
         if self.widget:
@@ -70,12 +70,12 @@ class TuiStreamingHandler(StreamingHandler):
 
 class NvimStreamingHandler(StreamingHandler):
     """Streaming handler for Neovim"""
-    
+
     def __init__(self, nvim=None, bufnr=None):
         super().__init__()
         self.nvim = nvim
         self.bufnr = bufnr
-    
+
     async def emit(self, chunk: StreamChunk):
         await super().emit(chunk)
         if self.nvim and self.bufnr:
@@ -90,11 +90,11 @@ class NvimStreamingHandler(StreamingHandler):
 
 class HeadlessStreamingHandler(StreamingHandler):
     """Streaming handler for headless CLI"""
-    
+
     def __init__(self, prefix: str = ""):
         super().__init__()
         self.prefix = prefix
-    
+
     async def emit(self, chunk: StreamChunk):
         await super().emit(chunk)
         print(f"{self.prefix}{chunk.content}", end="", flush=True)
