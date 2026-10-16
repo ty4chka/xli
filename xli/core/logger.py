@@ -10,7 +10,28 @@ import sys
 import os
 import traceback
 from datetime import datetime
+from contextlib import contextmanager
 from xli.paths import xli_path
+
+
+_console_muted = False
+
+
+class _ConsoleFilter(logging.Filter):
+    def filter(self, record):
+        return not _console_muted
+
+
+@contextmanager
+def quiet_console():
+    """Curses owns the screen; keep diagnostics in log files while it runs."""
+    global _console_muted
+    previous = _console_muted
+    _console_muted = True
+    try:
+        yield
+    finally:
+        _console_muted = previous
 
 
 # ANSI color codes
@@ -183,7 +204,8 @@ class StructuredLogger:
         # caller may pipe or parse (`xli tools schema --json`), and a stray log
         # line there turns valid JSON into garbage.
         ch = logging.StreamHandler(sys.stderr)
-        ch.setLevel(logging.INFO)
+        ch.setLevel(getattr(logging, os.environ.get("XLI_LOG_LEVEL", "WARNING").upper(), logging.WARNING))
+        ch.addFilter(_ConsoleFilter())
         ch.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(ch)
 

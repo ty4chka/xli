@@ -235,9 +235,9 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
     gutter = _gutter(kind)
 
     if kind == "user":
-        return _wrap(
+        return [_fit([], width)] + _wrap(
             gutter + [span(t("tui_you"), ACCENT), span(str(payload.get("text", "")))], width
-        )
+        ) + [_fit([], width)]
 
     if kind == "assistant":
         text = str(payload.get("text", "")).strip()
@@ -246,11 +246,11 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
         # The gutter is part of the indent, so the body wraps inside it. Every
         # row is padded back to `width`: the TUI paints into a fixed frame and
         # an unpadded row leaves the previous frame's characters on screen.
-        body_width = max(20, width - GUTTER_WIDTH - 4)
-        out: list[Row] = [_fit(gutter + [span("xli ", GOOD)], width)]
+        body_width = max(1, width - GUTTER_WIDTH - 4)
+        out: list[Row] = [_fit([], width), _fit(gutter + [span("xli ", GOOD)], width)]
         for row in md_rows(text, body_width):
             out.append(_fit([span(" " * (GUTTER_WIDTH + 1), NORMAL)] + row, width))
-        return out
+        return out + [_fit([], width)]
 
     if kind == "tool_call":
         name = str(payload.get("name", ""))
@@ -267,7 +267,8 @@ def transcript_row(kind: str, payload: dict[str, Any], width: int) -> list[Row]:
         ok = bool(payload.get("ok"))
         mark = span(t("ok") + " ", GOOD) if ok else span(t("fail") + " ", BAD)
         summary = str(payload.get("summary", ""))
-        return _wrap(gutter + [mark, span(summary, DIM)], width)
+        name = str(payload.get("name", ""))
+        return _wrap(gutter + [mark, span(f"{name} · " if name else "", BOLD), span(summary, DIM)], width)
 
     if kind == "repair":
         return _wrap(gutter + [span(str(payload.get("detail", "")), WARN)], width)
@@ -340,8 +341,14 @@ def _wrap(row: Row, width: int) -> list[Row]:
                 # Do not carry a leading space onto the new line.
                 if word == " ":
                     continue
-            current.append((word, style))
-            used += word_len
+            from xli.ui.text import split_cells
+            chunks = split_cells(word, width)
+            for index, chunk in enumerate(chunks):
+                if index:
+                    rows.append(current)
+                    current, used = [], 0
+                current.append((chunk, style))
+                used += display_width(chunk)
 
     rows.append(current)
     return [_fit(row, width) for row in rows]
@@ -405,6 +412,11 @@ def status_row(
 
     keys = hint or t("tui_keys")
 
+    # Keep escape/help discoverable on phones; omit counters before keys.
+    if width < 65 and not hint:
+        keys = "/help · ^C"
+    if _row_width(state) + _row_width(middle) + display_width(keys) + 2 > width:
+        middle = []
     used = _row_width(state) + _row_width(middle) + display_width(keys) + 2
     filler = width - used
     parts: Row = list(state) + list(middle)
@@ -412,10 +424,8 @@ def status_row(
         parts.append(span(" " * filler, NORMAL))
         parts.append(span(keys, DIM))
     else:
-        # Too narrow for everything: the keys matter more than the counters,
-        # because they are how the user gets out.
-        parts.append(span(" ", NORMAL))
-        parts.append(span(truncate_cells(keys, max(0, width - _row_width(parts))), DIM))
+        state_budget = max(0, width - display_width(keys) - 1)
+        parts = _fit(state, state_budget) + [span(" ", NORMAL), span(keys, DIM)]
     return _fit(parts, width)
 
 
@@ -553,6 +563,8 @@ slash commands
   /tools       list available tools
   /mode auto|confirm|readonly
   /model NAME  switch model
+  /plugins     installed plugins and authors
+  /cancel      cancel the running task
   /session     show the session id
   /clear       clear the transcript
   /quit        exit
@@ -573,6 +585,8 @@ slash-команды
   /tools       доступные инструменты
   /mode auto|confirm|readonly
   /model NAME  сменить модель
+  /plugins     плагины и авторы
+  /cancel      отменить текущую задачу
   /session     показать id сессии
   /clear       очистить транскрипт
   /quit        выход
@@ -587,3 +601,22 @@ def help_rows(width: int) -> list[Row]:
     for line in text.splitlines():
         rows.append(_fit([span(line, DIM if line.startswith(" ") else BOLD)], width))
     return rows
+
+
+def welcome_rows(width: int) -> list[Row]:
+    """Quiet empty state; intentionally no wall of borders or ASCII logo."""
+    from xli.ui.locale import lang
+    ru = lang() == "ru"
+    lines = [
+        ("", NORMAL),
+        ("  XLI  /  workspace", ACCENT),
+        ("", NORMAL),
+        ("  Что будем делать?" if ru else "  What shall we build?", BOLD),
+        ("  Опишите задачу. Инструменты появятся здесь." if ru else
+         "  Describe a task. Tool activity will appear here.", DIM),
+        ("", NORMAL),
+        ("  /help     /tools     /plugins", DIM),
+        ("  PgUp/PgDn · history     /cancel · stop", DIM),
+        ("", NORMAL),
+    ]
+    return [_fit([span(text, style)], width) for text, style in lines]

@@ -36,6 +36,14 @@ class XpiPlugin:
         self.platform = "all"
         self.logger = StructuredLogger(f"xli.{self.name}")
 
+    def tools(self):
+        """Return Tool objects; exported as ``<manifest-name>.<tool-name>``.
+
+        Called after on_load. Sync tool functions should be short; use async
+        tools and asyncio.to_thread for blocking work. Never print from hooks.
+        """
+        return []
+
     # ------------------------------------------------------------- lifecycle
     def on_load(self, context: dict[str, Any]) -> Any:
         """Called once, right after the plugin is constructed."""

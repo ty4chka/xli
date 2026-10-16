@@ -177,7 +177,7 @@ def _work_mode(args: argparse.Namespace):
 def _build_registry(config, policy, args: argparse.Namespace):
     from xli.tools.registry import default_registry
 
-    registry = default_registry(policy=policy)
+    registry = default_registry(policy=policy, platform="tui" if getattr(args, "command", "") == "tui" else "headless")
     for name in config.get("tools.disabled") or []:
         registry.set_enabled(name, False)
     return registry
@@ -249,7 +249,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         print()
         colour = STYLE.green if result.ok else STYLE.red
-        print(colour(STYLE.bold(f"[{result.stopped_reason}] ") + result.summary))
+        last_text = next((e.get("text", "") for e in reversed(events) if e["event"] == "assistant"), "")
+        summary = "" if last_text.strip() == result.summary.strip() else result.summary
+        print(colour(STYLE.bold(f"[{result.stopped_reason}] ") + summary))
         if result.stopped_reason == "provider_error":
             # The summary here is the raw exception; the human line explains it.
             from xli.ui.locale import humanise_provider_error
@@ -272,8 +274,9 @@ def _render_event(kind: str, payload: dict[str, Any]) -> None:
         if text:
             # Rendered through the same markdown parser the TUI uses, so a
             # heading or a code fence looks like one in both front ends.
-            print(STYLE.magenta("xli "))
-            print(render_markdown_ansi(text))
+            print("\n" + STYLE.magenta("  xli") + "\n")
+            print("\n".join("  " + line for line in render_markdown_ansi(text).splitlines()))
+            print()
     elif kind == "tool_call":
         name = str(payload.get("name", ""))
         args = payload.get("args") or {}
@@ -509,22 +512,30 @@ def cmd_session(args: argparse.Namespace) -> int:
 
     if args.action == "list":
         listing = Session.list_sessions(root=root)
-        _emit(listing, args.json)
+        from xli.ui.sessions import session_list
+        _emit(listing if args.json else session_list(listing), args.json)
         return EXIT_OK
 
     if args.action == "show":
+        if getattr(args, "latest", False):
+            args.id = "--latest"
         if not args.id:
             print("usage: xli session show <id|--latest>", file=sys.stderr)
             return EXIT_USAGE
-        session = (
-            Session.latest(root=root)
-            if args.id == "--latest"
-            else Session.load(args.id, root=root)
-        )
+        try:
+            session = (
+                Session.latest(root=root)
+                if args.id == "--latest"
+                else Session.load(args.id, root=root)
+            )
+        except (OSError, ValueError) as exc:
+            print(f"Cannot read session: {exc}", file=sys.stderr)
+            return EXIT_FAILED
         if session is None:
             print("no sessions found", file=sys.stderr)
             return EXIT_FAILED
-        _emit(session.transcript() if not args.json else [e.to_dict() for e in session.events], args.json)
+        from xli.ui.sessions import session_transcript
+        _emit(session_transcript(session) if not args.json else [e.to_dict() for e in session.events], args.json)
         return EXIT_OK
 
     if args.action == "delete":
@@ -930,7 +941,39 @@ def cmd_plugins(args: argparse.Namespace) -> int:
     from xli.xpi.manager import XPI_DIR, XpiManager
     from xli.xpi.state import XpiState
 
+    if args.action == "init":
+        if not args.name:
+            print("usage: xli plugins init <name> --author NAME", file=sys.stderr)
+            return EXIT_USAGE
+        from xli.xpi.scaffold import create_plugin
+        try:
+            directory = create_plugin(XPI_DIR, args.name, author=args.author, license=args.license)
+        except (ValueError, OSError) as exc:
+            print(f"Cannot create plugin: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        _emit({"path": str(directory), "enabled": False} if args.json else
+              f"\nCreated {directory}\nReview the code, then: xli plugins enable {args.name}\n", args.json)
+        return EXIT_OK
+
     manager = XpiManager()
+
+    if args.action == "info":
+        info = manager.get(args.name or "")
+        if info is None:
+            print("No such plugin", file=sys.stderr)
+            return EXIT_USAGE
+        if args.json:
+            _emit(info.to_dict(), True)
+        else:
+            print(f"\n  {info.name} · v{info.version} · API {info.api_version}\n")
+            for label, value in (("Author", info.author), ("License", info.license),
+                                 ("Description", info.description), ("Homepage", info.homepage),
+                                 ("Platform", info.platform), ("Path", info.path),
+                                 ("Hooks", ", ".join(info.hooks)), ("Tools", ", ".join(info.tools)),
+                                 ("Status", info.error or ("active" if info.enabled else "disabled"))):
+                print(f"  {label}: {value or '—'}")
+            print("\n  Trust: in-process Python · not sandboxed\n")
+        return EXIT_OK
 
     if args.action == "list":
         plugins = manager.list_plugins()
@@ -948,7 +991,10 @@ def cmd_plugins(args: argparse.Namespace) -> int:
                     if info["error"]
                     else STYLE.dim("disabled")
                 )
-                print(f"  {state:<8} {STYLE.bold(info['name']):<20} v{info['version']}")
+                print(f"\n  {STYLE.bold(info['name'])} · v{info['version']} · {state}")
+                print(STYLE.dim(f"    {info['author'] or 'author not specified'} · {info['license'] or 'license not specified'}"))
+                if info["description"]:
+                    print(f"    {info['description']}")
                 if info["error"]:
                     print(STYLE.red(f"           {info['error']}"))
                 elif info["hooks"]:
@@ -960,21 +1006,26 @@ def cmd_plugins(args: argparse.Namespace) -> int:
             print(f"usage: xli plugins {args.action} <name>", file=sys.stderr)
             return EXIT_USAGE
         ok = manager.set_enabled(args.name, args.action == "enable")
-        print(
-            STYLE.green(f"{args.action}d {args.name}")
-            if ok
-            else STYLE.red(f"no such plugin: {args.name}")
-        )
-        return EXIT_OK if ok else EXIT_USAGE
+        info = manager.get(args.name)
+        error = "" if ok else (info.error if info else "no such plugin")
+        payload = {"name": args.name, "ok": ok, "error": error}
+        if args.json:
+            _emit(payload, True)
+        else:
+            print(STYLE.green(f"{args.action}d {args.name}") if ok else STYLE.red(error))
+        return EXIT_OK if ok else EXIT_FAILED
 
     if args.action == "reload":
         if not args.name:
             print("usage: xli plugins reload <name>", file=sys.stderr)
             return EXIT_USAGE
         ok = manager.reload(args.name)
-        print(
-            STYLE.green(f"reloaded {args.name}") if ok else STYLE.red(f"reload failed: {args.name}")
-        )
+        info = manager.get(args.name)
+        error = "" if ok else ((info.error or "plugin is disabled") if info else "no such plugin")
+        if args.json:
+            _emit({"name": args.name, "reloaded": ok, "error": error}, True)
+        else:
+            print(STYLE.green(f"reloaded {args.name}") if ok else STYLE.red(f"reload failed: {error}"))
         return EXIT_OK if ok else EXIT_FAILED
 
     if args.action == "state":
@@ -1035,7 +1086,17 @@ def cmd_tui(args: argparse.Namespace) -> int:
 
     config = _load_config(args)
     configure_locale(config)
-    return run_tui(config, initial_task=" ".join(args.task) if args.task else "")
+    if not sys.stdout.isatty():
+        return run_tui(config)
+    policy = _build_policy(config, args)
+    registry = _build_registry(config, policy, args)
+    try:
+        provider = _build_provider(config)
+    except ValueError as exc:
+        print(STYLE.red(str(exc)), file=sys.stderr)
+        return EXIT_ENVIRONMENT
+    return run_tui(config, initial_task=" ".join(args.task) if args.task else "",
+                   registry=registry, policy=policy, provider=provider)
 
 
 def cmd_repl(args: argparse.Namespace) -> int:
@@ -1283,6 +1344,7 @@ def build_parser() -> argparse.ArgumentParser:
     session = sub.add_parser("session", help="conversation history")
     session.add_argument("action", choices=["list", "show", "delete"], nargs="?", default="list")
     session.add_argument("id", nargs="?")
+    session.add_argument("--latest", action="store_true", help="show the most recent session")
     session.add_argument("--project", help="project directory")
     session.add_argument("--json", action="store_true")
     session.set_defaults(func=cmd_session)
@@ -1358,12 +1420,14 @@ def build_parser() -> argparse.ArgumentParser:
     plugins = sub.add_parser("plugins", help="internal (XPI) plugins")
     plugins.add_argument(
         "action",
-        choices=["list", "enable", "disable", "reload", "state", "dispatch"],
+        choices=["list", "info", "init", "enable", "disable", "reload", "state", "dispatch"],
         nargs="?",
         default="list",
     )
     plugins.add_argument("name", nargs="?", help="plugin name, or hook for dispatch")
     plugins.add_argument("--json", action="store_true")
+    plugins.add_argument("--author", default="", help="author of a new plugin")
+    plugins.add_argument("--license", default="MIT", help="license declaration for a new plugin")
     plugins.set_defaults(func=cmd_plugins)
 
     # --- doctor

@@ -153,23 +153,23 @@ class Policy:
         return tool
 
     # -------------------------------------------------------------- checking
-    def check(self, tool: str, args: dict[str, Any] | None = None) -> Decision:
+    def check(self, tool: str, args: dict[str, Any] | None = None, *, mutates: bool = False) -> Decision:
         args = args or {}
         resource = self.resource_for(tool, args)
-        decision = self._check(tool, resource)
+        decision = self._check(tool, resource, mutates=mutates)
         self.history.append(
             {"tool": tool, "resource": resource, **decision.to_dict()}
         )
         return decision
 
-    def _check(self, tool: str, resource: str) -> Decision:
+    def _check(self, tool: str, resource: str, *, mutates: bool = False) -> Decision:
         # 1. Explicit deny always wins, in every mode.
         for pattern in self.deny:
             if _matches(pattern, resource):
                 return Decision(False, f"blocked by deny rule {pattern!r}", rule=pattern)
 
         # 2. Tool-level hard refusals.
-        if self.mode is Mode.READONLY and tool in MUTATING_TOOLS:
+        if self.mode is Mode.READONLY and (tool in MUTATING_TOOLS or mutates):
             return Decision(False, f"tool {tool!r} is refused in readonly mode")
 
         if tool in ("bash", "shell"):
@@ -180,7 +180,7 @@ class Policy:
                 )
 
         # 3. Reads are always allowed.
-        if tool in READONLY_TOOLS:
+        if tool in READONLY_TOOLS and not mutates:
             return ALLOW
 
         # 4. Auto mode lets everything else through.
@@ -193,7 +193,7 @@ class Policy:
                 return Decision(True, f"pre-approved by allow rule {pattern!r}", rule=pattern)
 
         # 6. Confirm mode: mutating tools and dangerous commands ask first.
-        if tool in MUTATING_TOOLS:
+        if (tool in MUTATING_TOOLS or mutates):
             return Decision(
                 True, "mutation requires confirmation", needs_confirmation=True
             )

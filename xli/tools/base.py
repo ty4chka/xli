@@ -158,6 +158,18 @@ class Tool(ABC):
         missing = [name for name in self.spec.required if name not in args or args[name] is None]
         if missing:
             return f"{self.name}: missing required argument(s): {', '.join(missing)}"
+        types = {"string": str, "integer": int, "number": (int, float),
+                 "boolean": bool, "object": dict, "array": list}
+        for param in self.spec.params:
+            if param.name not in args or args[param.name] is None:
+                continue
+            value = args[param.name]
+            expected = types.get(param.type)
+            if expected is not None and (not isinstance(value, expected) or
+                    (param.type in ("integer", "number") and isinstance(value, bool))):
+                return f"{self.name}: {param.name} must be {param.type}"
+            if param.enum and value not in param.enum:
+                return f"{self.name}: {param.name} must be one of {param.enum}"
         return None
 
 

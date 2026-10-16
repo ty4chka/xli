@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from xli.ui.locale import t
-from xli.ui.text import display_width
+from xli.ui.text import display_width, truncate
 from xli.tui.widgets import (  # noqa: F401  (re-exported for tests)
     separator_row,
     Row,
@@ -47,6 +47,8 @@ KEY_DOWN = 258
 @dataclass
 class TuiState:
     rows: list[Row] = field(default_factory=list)
+    events: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    rendered_width: int = 0
     scroll: int = 0
     buffer: str = ""
     history: list[str] = field(default_factory=list)
@@ -172,7 +174,6 @@ class Tui:
         """
         if self.session is None or self.state.rows:
             return
-        width = self._width()
         events = getattr(self.session, "events", []) or []
         for event in events[-200:]:
             kind = getattr(event, "kind", "")
@@ -181,19 +182,22 @@ class Tui:
             if not text:
                 continue
             if kind == "user":
-                self.state.rows.extend(transcript_row("user", {"text": text}, width))
+                self._record_event("user", {"text": text})
             elif kind == "assistant":
-                self.state.rows.extend(transcript_row("assistant", {"text": text}, width))
+                self._record_event("assistant", {"text": text})
         if self.state.rows:
-            self.state.rows.extend(
-                transcript_row("note", {"text": t("tui_history_note")}, width)
-            )
+            self._record_event("note", {"text": t("tui_history_note")})
 
     # ------------------------------------------------------------------ paint
     def draw(self) -> None:
         if self.screen is None:
             return
         height, width = self.screen.getmaxyx()
+        width = max(0, width - 1)  # reserve the terminal's bottom-right cell
+        if width != self.state.rendered_width and self.state.events:
+            self.state.rows = [row for kind, payload in self.state.events
+                               for row in transcript_row(kind, payload, width)]
+            self.state.rendered_width = width
         layout = make_layout(width, height)
         if not layout.is_usable():
             self._draw_too_small(width, height)
@@ -213,6 +217,9 @@ class Tui:
             body = help_rows(width)
         else:
             body = self.state.rows
+            if not body:
+                from xli.tui.widgets import welcome_rows
+                body = welcome_rows(width)
 
         window, _ = visible_window(body, layout.body_height, self.state.scroll)
         self._paint_rows(layout.body_top, window)
@@ -259,7 +266,11 @@ class Tui:
     def _draw_too_small(self, width: int, height: int) -> None:
         self.screen.erase()
         message = t("tui_small", width=width, height=height)
-        self.screen.addnstr(0, 0, message, max(0, width - 1))
+        if height > 0 and width > 1:
+            try:
+                self.screen.addstr(0, 0, truncate(message, width - 1))
+            except curses.error:
+                pass
         self.screen.refresh()
 
     def _paint_rows(self, top: int, rows: list[Row]) -> None:
@@ -274,7 +285,8 @@ class Tui:
                     break
                 attr = self.attrs.get(style, curses.A_NORMAL)
                 try:
-                    self.screen.addnstr(line, column, text, width - column - 1, attr)
+                    clipped = truncate(text, width - column - 1, ellipsis="")
+                    self.screen.addstr(line, column, clipped, attr)
                 except curses.error:
                     pass  # writing the bottom-right cell always raises; ignore it
                 # Cells, not bytes and not codepoints: a wide glyph occupies
@@ -355,7 +367,7 @@ class Tui:
         if key == 21:  # ^U clears the line
             state.buffer = ""
             return True
-        if 32 <= key < 127 or key > 127:
+        if 32 <= key < 127:
             try:
                 state.buffer += chr(key)
             except (ValueError, OverflowError):
@@ -388,6 +400,9 @@ class Tui:
 
     def _submit(self) -> None:
         text = self.state.buffer.strip()
+        if text and not text.startswith("/") and self._agent_task is not None and not self._agent_task.done():
+            self.append_event("warning", {"message": t("tui_already")})
+            return  # retain the draft; don't display a message that wasn't sent
         self.state.buffer = ""
         self.state.history_index = -1
         if not text:
@@ -398,18 +413,17 @@ class Tui:
             self._slash(text)
             return
 
-        for row in transcript_row("user", {"text": text}, self._width()):
-            self.state.rows.append(row)
+        self.state.show_help = False
+        self.state.scroll = 0
+        self._record_event("user", {"text": text})
         self._run_task(text)
 
     def _slash(self, text: str) -> None:
         parts = text[1:].split(maxsplit=1)
-        command = parts[0].lower()
+        command = parts[0].lower() if parts else "help"
         argument = parts[1].strip() if len(parts) > 1 else ""
-        width = self._width()
-
         def note(message: str) -> None:
-            self.state.rows.extend(transcript_row("note", {"text": message}, width))
+            self._record_event("note", {"text": message})
 
         if command == "help":
             self.state.show_help = not self.state.show_help
@@ -425,12 +439,32 @@ class Tui:
                 self.policy.mode = Mode.parse(argument)
             note(t("tui_mode", mode=argument))
         elif command == "model" and argument:
+            if self.state.busy:
+                note(t("tui_already"))
+                return
             self.state.model = argument
             self.config.set("provider.model", argument)
+            from xli.providers.base import get_provider
+            self.provider = get_provider(self.config, force=True)
             note(t("tui_model", model=argument))
         elif command == "session":
             note(t("tui_session", session=self.state.session_id or "(none)"))
+        elif command == "cancel":
+            if self._agent_task and not self._agent_task.done():
+                self._agent_task.cancel()
+                if self.state.approval is not None:
+                    self._resolve_approval(False)
+                note("Task cancelled")
+        elif command == "plugins":
+            from xli.xpi.manager import get_xpi_manager
+            plugins = get_xpi_manager().list_plugins()
+            for plugin in plugins:
+                status = plugin["error"] or ("active" if plugin["enabled"] else "disabled")
+                note(f"{plugin['name']} v{plugin['version']} · {plugin['author'] or 'unknown author'} · {status}")
+            if not plugins:
+                note("No plugins installed · xli plugins init my-plugin")
         elif command == "clear":
+            self.state.events = []
             self.state.rows = []
             self.state.scroll = 0
         elif command in ("quit", "exit"):
@@ -440,7 +474,9 @@ class Tui:
 
         self.draw()
 
-    def _handle_approval_key(self, key: int) -> bool:
+    def _handle_approval_key(self, key) -> bool:
+        if isinstance(key, str) and len(key) == 1:
+            key = ord(key)
         if key in (ord("y"), ord("Y")):
             self._resolve_approval(True)
         elif key in (ord("n"), ord("N"), 27):
@@ -458,13 +494,8 @@ class Tui:
         self.state.approval_future = None
         tool = (self.state.approval or {}).get("tool", "")
         self.state.approval = None
-        self.state.rows.extend(
-            transcript_row(
-                "note",
-                {"text": f"{tool}: {t('tui_approved') if approved else t('tui_refused')}"},
-                self._width(),
-            )
-        )
+        self._record_event("note", {
+            "text": f"{tool}: {t('tui_approved') if approved else t('tui_refused')}"})
         if future is not None and not future.done():
             future.set_result(approved)
         self.draw()
@@ -473,12 +504,20 @@ class Tui:
         if self.screen is None:
             return 80
         _, width = self.screen.getmaxyx()
-        return width
+        return max(1, width - 1)
 
     # ------------------------------------------------------------------ agent
+    def _record_event(self, kind: str, payload: dict[str, Any]) -> None:
+        from copy import deepcopy
+        self.state.events.append((kind, deepcopy(payload)))
+        self.state.rendered_width = self._width()
+        self.state.rows.extend(transcript_row(kind, payload, self._width()))
+
     def append_event(self, kind: str, payload: dict[str, Any]) -> None:
-        width = self._width()
-        self.state.rows.extend(transcript_row(kind, payload, width))
+        previous = len(self.state.rows)
+        self._record_event(kind, payload)
+        if self.state.scroll:
+            self.state.scroll += len(self.state.rows) - previous
         if kind == "tool_call":
             self.state.counters["tools"] = self.state.counters.get("tools", 0) + 1
         if kind == "tool_result" and not payload.get("ok"):
@@ -507,14 +546,16 @@ class Tui:
             from xli.session import Session
             from xli.tools.registry import default_registry
 
-            registry = self.registry or default_registry(policy=self.policy)
-            session = self.session or Session()
+            registry = self.registry if self.registry is not None else default_registry(policy=self.policy, platform="tui")
+            self.registry = registry
+            session = self.session if self.session is not None else Session()
+            self.session = session
             self.state.session_id = session.session_id
             self.state.busy = True
             self.draw()
 
-            if self.policy is not None and not self.state.allow_all:
-                registry.confirm_handler = self._confirm_async
+            previous_handler = registry.confirm_handler
+            registry.confirm_handler = self._confirm_async
 
             agent = Agent(
                 self.provider,
@@ -526,12 +567,14 @@ class Tui:
             )
             try:
                 result = await agent.run(task)
-                self.append_event(
-                    "note", {"text": f"[{result.stopped_reason}] {result.summary}"}
-                )
+                last_text = next((p.get("text", "") for k, p in reversed(self.state.events)
+                                  if k == "assistant"), "")
+                summary = "" if last_text.strip() == result.summary.strip() else result.summary
+                self.append_event("note", {"text": f"[{result.stopped_reason}] {summary}"})
             except Exception as exc:  # noqa: BLE001 - keep the UI alive
                 self.append_event("error", {"message": f"{type(exc).__name__}: {exc}"})
             finally:
+                registry.confirm_handler = previous_handler
                 self.state.busy = False
                 self.draw()
 
@@ -550,51 +593,55 @@ class Tui:
         if self.state.allow_all:
             return True
         future = self.request_approval(tool, args, reason)
-        while not future.done():
-            self._pump_input()
-            await asyncio.sleep(0.02)
-        return bool(future.result())
-
-    def _pump_input(self) -> None:
-        self.screen.nodelay(True)
         try:
-            while True:
-                key = self._read_char()
-                if key == -1:
-                    break
-                if not self._handle_key(key):
-                    raise SystemExit(0)
+            # run_async is the sole owner of keyboard input.
+            return bool(await future)
         finally:
-            self.screen.nodelay(False)
+            if self.state.approval_future is future:
+                self.state.approval = None
+                self.state.approval_future = None
 
     # -------------------------------------------------------------------- run
     async def run_async(self, initial_task: str = "") -> int:
-        self.screen.nodelay(False)
-        self.screen.timeout(50)  # wake regularly so agent events repaint promptly
-
+        self.screen.nodelay(True)
         if initial_task:
             self.state.buffer = initial_task
             self._submit()
-
-        while True:
-            key = self._read_char()
-            if key == -1:
+        try:
+            while True:
+                # A bounded input batch keeps large pastes from starving the agent.
+                for _ in range(64):
+                    key = self._read_char()
+                    if key == -1:
+                        break
+                    if not self._handle_key(key):
+                        return 0
                 self.draw()
-                continue
-            if not self._handle_key(key):
-                break
-            self.draw()
-        return 0
+                await asyncio.sleep(0.03)
+        finally:
+            if self.state.approval is not None:
+                self._resolve_approval(False)
+            if self._agent_task is not None and not self._agent_task.done():
+                self._agent_task.cancel()
+                try:
+                    await self._agent_task
+                except asyncio.CancelledError:
+                    pass
 
 
 def _curses_main(stdscr, app: Tui, initial_task: str) -> int:
     app.screen = stdscr
     app.attrs = _init_colors()
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
     stdscr.keypad(True)
     app._seed_history()
     app.draw()
-    return asyncio.run(app.run_async(initial_task))
+    from xli.core.logger import quiet_console
+    with quiet_console():
+        return asyncio.run(app.run_async(initial_task))
 
 
 def _setup_locale() -> str:
@@ -616,7 +663,7 @@ def _setup_locale() -> str:
             locale.setlocale(locale.LC_ALL, candidate)
         except locale.Error:
             continue
-        encoding = (locale.getencoding() or "").lower()
+        encoding = (locale.getpreferredencoding(False) or "").lower()
         if encoding in ("utf-8", "utf8"):
             return "utf-8"
 
@@ -624,7 +671,7 @@ def _setup_locale() -> str:
         locale.setlocale(locale.LC_CTYPE, "")
     except locale.Error:
         pass
-    return (locale.getencoding() or "ascii").lower()
+    return (locale.getpreferredencoding(False) or "ascii").lower()
 
 
 def run_tui(config, *, initial_task: str = "", registry=None, policy=None, provider=None) -> int:

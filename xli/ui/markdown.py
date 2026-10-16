@@ -451,6 +451,14 @@ def render_rows(markdown: str, width: int, *, indent: int = 0) -> list[Row]:
                 emit(row)
 
         elif block.kind == "code":
+            from xli.ui.diagrams import diagram_lines
+            diagram = diagram_lines(block.language, block.text, max(1, body_width - 2))
+            if diagram is not None:
+                emit([(f"{gutter}╭─ {block.language}", DIM)])
+                for line in diagram:
+                    emit([(f"{gutter}│ ", DIM), (line, ACCENT)])
+                emit([(f"{gutter}╰─", DIM)])
+                continue
             label = f"─ {block.language} " if block.language else ""
             head = f"{gutter}┌{label}"
             fill = max(3, min(24, body_width - display_width(head)))

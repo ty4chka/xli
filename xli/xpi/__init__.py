@@ -33,3 +33,7 @@ __all__ = [
     "get_xpi_state",
     "XpiBridge",
 ]
+
+from xli.xpi.sdk import PluginContext, Param, Tool, ToolResult, tool
+
+__all__ += ["PluginContext", "Param", "Tool", "ToolResult", "tool"]

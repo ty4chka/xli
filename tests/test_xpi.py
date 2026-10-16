@@ -194,7 +194,7 @@ class TestDispatch:
         report = reloaded.dispatch("on_tool_call", name="read")
         assert report.called == ["demo"]
         assert report.errors == []
-        assert reloaded.instance("demo").seen == ["read"]
+        assert reloaded.instance("demo").seen == ["load", "read"]
 
     def test_multiple_plugins_all_called(self, manager, tmp_path):
         make_plugin(tmp_path, "first", GOOD_PLUGIN)
@@ -213,7 +213,7 @@ class TestDispatch:
 
         report = reloaded.dispatch("on_tool_call", name="write")
         assert "zzz-good" in report.called
-        assert reloaded.instance("zzz-good").seen == ["write"], "must still have run"
+        assert reloaded.instance("zzz-good").seen == ["load", "write"], "must still have run"
         assert len(report.errors) == 1
         assert report.errors[0]["plugin"] == "aaa-crash"
         assert "plugin exploded" in report.errors[0]["error"]
@@ -339,7 +339,7 @@ class Demo(XpiPlugin):
         XpiManager.reset()
         reloaded = XpiManager(root=tmp_path)
         reloaded.call_hook("demo", "on_tool_call", {"name": "grep"})
-        assert reloaded.instance("demo").seen == ["grep"]
+        assert reloaded.instance("demo").seen == ["load", "grep"]
 
     def test_call_hook_unknown_plugin_is_none(self, manager):
         assert manager.call_hook("nope", "on_load", {}) is None
@@ -618,13 +618,13 @@ class Watcher(XpiPlugin):
         assert target.read_text() == "x", "the tool call must still have run"
         assert any("watcher" in str(w.get("message", "")) for w in warnings)
 
-    def test_no_plugins_is_the_default(self):
+    def test_default_registry_connects_plugin_manager(self):
         from xli.agent import Agent
         from xli.permissions.policy import Mode, Policy
         from xli.providers.fake import FakeProvider
 
         agent = Agent(FakeProvider(), policy=Policy(mode=Mode.AUTO))
-        assert agent.plugins is None
+        assert isinstance(agent.plugins, XpiManager)
         agent.notify_plugins("on_load", x=1)  # must be a silent no-op
 
 

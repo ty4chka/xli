@@ -224,7 +224,7 @@ class ToolRegistry:
         running". The TUI hit exactly that. A handler may now be either a plain
         callable or a coroutine function.
         """
-        decision = self.policy.check(name, args)
+        decision = self.policy.check(name, args, mutates=spec.mutates)
         if not decision.allowed:
             return ToolResult.failure(
                 f"permission denied: {decision.reason}", tool=name, data=decision.to_dict()
@@ -254,10 +254,13 @@ def mutating_names() -> tuple[str, ...]:
     return tuple(sorted(MUTATING_TOOLS))
 
 
-def default_registry(policy: Policy | None = None) -> ToolRegistry:
+def default_registry(policy: Policy | None = None, *, platform: str = "headless") -> ToolRegistry:
     """A registry preloaded with the built-in toolset."""
     from xli.tools.builtin import builtin_tools
 
     registry = ToolRegistry(policy=policy)
     registry.register_many(builtin_tools())
+    registry.plugin_platform = platform
+    from xli.xpi.manager import get_xpi_manager
+    get_xpi_manager().attach_registry(registry)
     return registry

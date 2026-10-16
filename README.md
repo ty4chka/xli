@@ -283,3 +283,25 @@ xli/xpi/        внутренняя система плагинов (in-process
 xli/nvim/       установщик плагина + сам Lua-плагин
 xli/cli.py      командная строка
 ```
+
+
+## Плагины и новый терминальный интерфейс
+
+![XLI TUI: реальный PTY-захват с тестовым FakeProvider](docs/images/tui-preview.svg)
+
+Демонстрация интерфейса с FakeProvider, без обращения к LLM/API.
+
+- [SDK XPI: инструменты, авторство, lifecycle, безопасность](xli/guides/plugins.md)
+- [CLI/TUI: сессии, отступы, mind map и диаграммы](xli/guides/visuals.md)
+- [Референсы OpenCode и авторство](docs/REFERENCES.md)
+
+```bash
+xli plugins init my-plugin --author "Your name"
+xli plugins info my-plugin
+xli guides read plugins
+xli guides read visuals
+xli session show --latest
+```
+
+Новые плагины создаются выключенными: проверьте Python-код перед `enable`.
+Они выполняются внутри процесса и не являются sandboxed-расширениями.

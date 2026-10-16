@@ -189,7 +189,8 @@ def extract_tool_payloads(text: str) -> list[tuple[str, int, int]]:
         open_at = text.find(_OPEN, cursor)
         if open_at < 0:
             break
-        close_at = text.find(_CLOSE, open_at + len(_OPEN))
+        from xli.parse.compat import protocol_boundary
+        close_at, _ = protocol_boundary(text, open_at + len(_OPEN), (_CLOSE,))
         if close_at < 0:
             # Unterminated: take the rest, the stream may still be running.
             out.append((text[open_at + len(_OPEN) :], open_at, len(text)))
@@ -239,7 +240,7 @@ def extract_bare_calls(
         name = value.get("name") or value.get("tool")
         if not isinstance(name, str) or not name.strip():
             continue
-        args = value.get("args") or value.get("arguments") or value.get("params") or {}
+        args = value.get("args", value.get("arguments", value.get("params", {})))
         if not isinstance(args, dict):
             continue
         if known_tools is not None:
@@ -260,15 +261,19 @@ def extract_bare_calls(
 
 def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedResponse:
     """Parse a complete model turn into text + tool calls + done marker."""
-    repairs: list[str] = []
-    body, fenced = strip_fences(text)
-    if fenced:
-        repairs.append("closed an unterminated code fence")
+    from xli.parse.compat import normalize_legacy
+
+    body, repairs = normalize_legacy(text)
+    # Preserve Markdown fences in ordinary answers (including diagrams).
+    # Only unwrap fences that actually enclose a protocol call.
+    body = re.sub(r"```(?:json)?\s*\n?(<tool>.*?</tool>)\s*```", r"\1", body, flags=re.S)
 
     calls: list[ToolCall] = []
     spans = extract_tool_payloads(body)
 
     for payload, start, _end in spans:
+        if payload.lstrip().startswith("```"):
+            payload, _ = strip_fences(payload)
         payload = payload.strip()
         if not payload:
             repairs.append("ignored an empty <tool> block")
@@ -296,13 +301,13 @@ def parse_response(text: str, *, known_tools: set[str] | None = None) -> ParsedR
             continue
 
         name = parsed.get("name") or parsed.get("tool")
-        args = parsed.get("args") or parsed.get("arguments") or parsed.get("params") or {}
+        args = parsed.get("args", parsed.get("arguments", parsed.get("params", {})))
         if not isinstance(name, str) or not name:
             repairs.append("skipped a tool block with no 'name'")
             continue
         if not isinstance(args, dict):
-            repairs.append(f"coerced non-object args for {name}")
-            args = {}
+            repairs.append(f"skipped non-object args for {name}")
+            continue
 
         calls.append(ToolCall(name=name, args=args, raw=payload))
 
@@ -347,31 +352,35 @@ class StreamParser:
     def __init__(self) -> None:
         self._buffer = ""
         self._emitted = 0
+        self._processed = 0
 
     def feed(self, chunk: str) -> list[ToolCall]:
         """Add text and return any newly completed tool calls."""
         self._buffer += chunk
-        spans = extract_tool_payloads(self._buffer)
-        complete = [s for s in spans if s[0] != "" or True]
+        from xli.parse.compat import normalize_legacy
+
+        body, _ = normalize_legacy(self._buffer, final=False)
+        complete = extract_tool_payloads(body)
 
         fresh: list[ToolCall] = []
         for index, (payload, _start, _end) in enumerate(complete):
-            if index < self._emitted:
+            if index < self._processed:
                 continue
             # The final span may be unterminated (stream still running).
-            terminator = self._buffer.find(_CLOSE, _start)
-            if terminator < 0:
+            if not body[_start:_end].endswith(_CLOSE):
                 break
-            self._emitted = index + 1
+            self._processed = index + 1
             call = _parse_single(payload)
             if call is not None:
                 fresh.append(call)
+                self._emitted += 1
         return fresh
 
     @property
     def pending(self) -> str:
         """Text buffered so far, with completed tool blocks removed."""
-        prose = self._buffer
+        from xli.parse.compat import normalize_legacy
+        prose, _ = normalize_legacy(self._buffer)
         for _payload, start, end in reversed(extract_tool_payloads(prose)):
             prose = prose[:start] + prose[end:]
         return prose.strip()
@@ -386,6 +395,7 @@ class StreamParser:
     def reset(self) -> None:
         self._buffer = ""
         self._emitted = 0
+        self._processed = 0
 
 
 def _parse_single(payload: str) -> ToolCall | None:
@@ -407,9 +417,9 @@ def _parse_single(payload: str) -> ToolCall | None:
         name = value.get("name") or value.get("tool")
         if not isinstance(name, str) or not name:
             continue
-        args = value.get("args") or value.get("arguments") or value.get("params") or {}
+        args = value.get("args", value.get("arguments", value.get("params", {})))
         if not isinstance(args, dict):
-            args = {}
+            continue
         return ToolCall(name=name, args=args, raw=payload)
     return None
 

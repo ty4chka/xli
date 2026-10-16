@@ -147,10 +147,10 @@ class TestParseResponse:
         assert result.calls[0].name == "read"
         assert result.calls[0].args == {"path": "a"}
 
-    def test_non_object_args_coerced(self):
+    def test_non_object_args_rejected(self):
         result = parse_response('<tool>{"name":"read","args":"a.py"}</tool>')
-        assert result.calls[0].args == {}
-        assert any("coerced" in r for r in result.repairs)
+        assert result.calls == []
+        assert any("skipped non-object" in r for r in result.repairs)
 
     def test_call_inside_fence(self):
         result = parse_response("```json\n" + tool_block({"name": "read", "args": {}}) + "\n```")

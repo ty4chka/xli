@@ -53,6 +53,8 @@ When the task is complete, end your reply with <done>short summary</done>.
 
 Rules:
 - Read before you edit. Never guess at file contents.
+- Use only tools in the catalogue below. Local grep searches files, not the web.
+- A tool status/health check does not prove a previous call succeeded.
 - Make the smallest change that fixes the problem.
 - After changing code, verify it: run the tests or the command that proves it works.
 - If a tool returns an error, read it and correct your approach. Do not repeat an identical call.
@@ -143,6 +145,8 @@ class Agent:
         self.registry = registry if registry is not None else default_registry(policy=self.policy)
         if self.registry.policy is None:
             self.registry.policy = self.policy
+        if self.plugins is None:
+            self.plugins = getattr(self.registry, "plugins", None)
         self.session = session
         self.max_steps = max(1, int(max_steps))
         self.temperature = temperature
@@ -244,8 +248,10 @@ class Agent:
             parsed: ParsedResponse = parse_response(raw or "", known_tools=self.known_tools)
             repairs.extend(parsed.repairs)
 
-            if parsed.text:
-                self.emit("assistant", text=parsed.text)
+            protocol_error = any("skipped" in r or "empty <tool>" in r for r in parsed.repairs)
+            assistant_text = parsed.text or (parsed.done_text if parsed.done and not protocol_error else "")
+            if assistant_text:
+                self.emit("assistant", text=assistant_text)
             for repair in parsed.repairs:
                 self.emit("repair", detail=repair)
 
@@ -253,21 +259,13 @@ class Agent:
 
             step = StepOutcome(
                 index=index,
-                text=parsed.text,
+                text=assistant_text,
                 calls=parsed.calls,
                 seconds=time.perf_counter() - step_started,
             )
 
             if parsed.calls:
                 step.results = await self._run_calls(parsed.calls)
-                for call, result in zip(parsed.calls, step.results):
-                    self.emit(
-                        "tool_result",
-                        name=call.name,
-                        args=call.args,
-                        ok=result.ok,
-                        summary=result.render(),
-                    )
                 messages.append(
                     {
                         "role": "user",
@@ -277,17 +275,35 @@ class Agent:
 
             if self.session is not None:
                 self.session.add_assistant(
-                    parsed.text, calls=[c.to_dict() for c in parsed.calls]
+                    assistant_text, calls=[c.to_dict() for c in parsed.calls]
                 )
                 for call, result in zip(parsed.calls, step.results):
                     self.session.add_tool(call.name, result.render(), ok=result.ok)
 
             steps.append(step)
 
+            if not parsed.calls and protocol_error:
+                stopped = "tool_parse_error"
+                summary = "Model emitted an invalid tool call; no action was executed."
+                if index < min(3, self.max_steps):
+                    messages.append({"role": "user", "content":
+                        "Your tool call could not be parsed and was NOT executed. "
+                        'Retry with <tool>{"name":"registered_tool","args":{}}</tool>. '
+                        "Use literal JSON arguments only. " + "; ".join(parsed.repairs)})
+                    continue
+                self.emit("error", message=summary)
+                break
+
+            if parsed.done and (protocol_error or any(not r.ok for r in step.results)):
+                summary = "Tool call failed; task was not completed."
+                # Tool results and repair feedback are already in messages.
+                # A done marker must not override a refused/failed operation.
+                continue
+
             if parsed.done:
                 stopped = "done"
                 summary = parsed.done_text or parsed.text
-                final_text = parsed.text
+                final_text = assistant_text
                 break
 
             if not parsed.calls:
@@ -364,7 +380,7 @@ class Agent:
         if self.plugins is None:
             return
         try:
-            report = self.plugins.dispatch(hook, **context)
+            report = self.plugins.dispatch(hook, platform=getattr(self.registry, "plugin_platform", "headless"), **context)
         except Exception:  # noqa: BLE001 - plugin system failure is not fatal
             return
         for failure in report.errors:
@@ -384,6 +400,8 @@ class Agent:
             self.notify_plugins(
                 "on_tool_result", name=call.name, ok=result.ok, summary=result.render()
             )
+            self.emit("tool_result", name=call.name, args=call.args, ok=result.ok,
+                      summary=result.render(), duration_ms=result.duration_ms)
             results.append(result)
         return results
 

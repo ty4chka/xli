@@ -1,3 +1,18 @@
+## 2026-10-14 — Tool protocol, terminal usability, XPI SDK
+
+- Recover explicitly tagged tool_call function literals, hybrid arg_key/arg_value
+  and JSON function envelopes without eval. Reject non-object arguments; bounded
+  protocol retries report failure instead of false success. Preserve Markdown fences.
+- Fix curses loop starvation, string approval keys, blocking approval input,
+  missing CLI TUI provider/policy wiring, draft loss, empty-session replacement,
+  function-key text corruption, resize reflow, and console log interference.
+- Add readable session cards, working --latest, honest legacy-call display,
+  whitespace-separated transcript, empty state, terminal mind maps/bar charts.
+- XPI API v1: author/license/description/homepage/config, manifest validation,
+  actual on_load/cleanup, namespaced tools, policy-aware mutations, state helpers,
+  relative package imports and fresh helper reloads. Add plugins init/info and guides.
+- OpenCode inspected as architecture reference only; no source/assets copied.
+
 # Проход 6 — закрыл все 3 оставшихся находки из Прохода 5
 
 ## `content_path`/архив: асимметрия убрана

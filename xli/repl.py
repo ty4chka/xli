@@ -85,8 +85,9 @@ class Repl:
             if text:
                 from xli.ui.ansi import render_markdown_ansi
 
-                _print("\033[35mxli\033[0m")
+                _print("\n\033[35m  xli\033[0m\n")
                 _print(render_markdown_ansi(text))
+                _print()
         elif kind == "tool_call":
             name = str(payload.get("name", ""))
             args = payload.get("args") or {}
